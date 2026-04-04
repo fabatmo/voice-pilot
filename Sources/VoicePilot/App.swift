@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var terminalController: TerminalController?
     var confirmationManager: ConfirmationManager?
     var floatingPanel: FloatingPanelController?
+    var promptBuilder: PromptBuilder?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -31,6 +32,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         commandDetector = CommandDetector()
         promptRefiner = PromptRefiner()
         confirmationManager = ConfirmationManager(terminalController: terminalController!)
+        promptBuilder = PromptBuilder()
 
         speechEngine = SpeechEngine { [weak self] utterance in
             self?.handleUtterance(utterance)
@@ -38,14 +40,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
-            terminalController: terminalController!,
             onQuit: { NSApp.terminate(nil) }
         )
 
-        // Show persistent floating panel
+        // Show persistent floating panel with all controls
         floatingPanel = FloatingPanelController(
             speechEngine: speechEngine!,
-            confirmationManager: confirmationManager!
+            confirmationManager: confirmationManager!,
+            promptBuilder: promptBuilder!,
+            terminalController: terminalController!
         )
 
         speechEngine?.startListening()
@@ -54,6 +57,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleUtterance(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return }
+
+        // --- Prompt Builder mode ---
+        if promptBuilder?.isActive == true {
+            // "send" / "done" / "ship it" — send the draft to terminal
+            if trimmed == "send" || trimmed == "done" || trimmed == "ship it" || trimmed == "send it" {
+                if let draft = promptBuilder?.currentDraft, !draft.isEmpty {
+                    terminalController?.pasteAndEnter(draft)
+                    confirmationManager?.showBriefly(draft)
+                    promptBuilder?.stop()
+                }
+                return
+            }
+            // "cancel" / "discard" — exit builder without sending
+            if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind" {
+                promptBuilder?.stop()
+                return
+            }
+            // "start over" — reset but stay in builder
+            if trimmed == "start over" || trimmed == "reset" {
+                promptBuilder?.start()
+                return
+            }
+            // Otherwise — feed input to builder
+            promptBuilder?.addInput(text) {}
+            return
+        }
+
+        // --- Normal mode ---
+
+        // Voice command to activate prompt builder
+        if trimmed == "build prompt" || trimmed == "prompt builder" || trimmed == "draft mode" || trimmed == "builder" {
+            promptBuilder?.start()
+            return
+        }
 
         // Check if it's a confirmation/cancel for pending prompt
         if confirmationManager?.isShowingConfirmation == true {

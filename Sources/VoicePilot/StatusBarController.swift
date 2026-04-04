@@ -5,13 +5,11 @@ import Combine
 class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
-    private var terminalController: TerminalController
     private var onQuit: () -> Void
     private var cancellables = Set<AnyCancellable>()
 
-    init(speechEngine: SpeechEngine, terminalController: TerminalController, onQuit: @escaping () -> Void) {
+    init(speechEngine: SpeechEngine, onQuit: @escaping () -> Void) {
         self.speechEngine = speechEngine
-        self.terminalController = terminalController
         self.onQuit = onQuit
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -22,21 +20,15 @@ class StatusBarController {
             button.target = self
         }
 
-        setupMenu()
         observeState()
     }
 
     @objc private func toggleMenu() {
         statusItem.menu = buildMenu()
         statusItem.button?.performClick(nil)
-        // Clear menu after it closes so clicks work next time
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.statusItem.menu = nil
         }
-    }
-
-    private func setupMenu() {
-        // Menu built on demand in toggleMenu
     }
 
     private func buildMenu() -> NSMenu {
@@ -50,39 +42,7 @@ class StatusBarController {
         stateItem.isEnabled = false
         menu.addItem(stateItem)
 
-        if !speechEngine.currentTranscript.isEmpty {
-            let transcriptItem = NSMenuItem(
-                title: "  \"\(speechEngine.currentTranscript.prefix(50))\"",
-                action: nil,
-                keyEquivalent: ""
-            )
-            transcriptItem.isEnabled = false
-            menu.addItem(transcriptItem)
-        }
-
         menu.addItem(.separator())
-
-        let modeLabel = NSMenuItem(title: "── Send To ──", action: nil, keyEquivalent: "")
-        modeLabel.isEnabled = false
-        menu.addItem(modeLabel)
-
-        let terminalItem = NSMenuItem(
-            title: "  Terminal Only",
-            action: #selector(setTerminalMode),
-            keyEquivalent: ""
-        )
-        terminalItem.target = self
-        terminalItem.state = terminalController.terminalOnly ? .on : .off
-        menu.addItem(terminalItem)
-
-        let anyAppItem = NSMenuItem(
-            title: "  Any App (Browser, Notes, etc.)",
-            action: #selector(setAnyAppMode),
-            keyEquivalent: ""
-        )
-        anyAppItem.target = self
-        anyAppItem.state = terminalController.terminalOnly ? .off : .on
-        menu.addItem(anyAppItem)
 
         let toggleItem = NSMenuItem(
             title: speechEngine.isListening ? "Pause Listening" : "Start Listening",
@@ -100,16 +60,6 @@ class StatusBarController {
         menu.addItem(quitItem)
 
         return menu
-    }
-
-    @objc private func setTerminalMode() {
-        terminalController.terminalOnly = true
-        flash("Terminal Only")
-    }
-
-    @objc private func setAnyAppMode() {
-        terminalController.terminalOnly = false
-        flash("Any App")
     }
 
     @objc private func toggleListening() {

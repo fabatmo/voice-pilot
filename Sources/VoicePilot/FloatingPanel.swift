@@ -2,211 +2,326 @@ import SwiftUI
 import AppKit
 import Combine
 
-class FloatingPanelController: ObservableObject {
-    private var window: NSPanel?
+class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
+    var window: NSWindow?
     private var speechEngine: SpeechEngine
     private var confirmationManager: ConfirmationManager
+    private var promptBuilder: PromptBuilder
+    private var terminalController: TerminalController
     @Published var isMini = true
 
-    init(speechEngine: SpeechEngine, confirmationManager: ConfirmationManager) {
+    init(speechEngine: SpeechEngine, confirmationManager: ConfirmationManager, promptBuilder: PromptBuilder, terminalController: TerminalController) {
         self.speechEngine = speechEngine
         self.confirmationManager = confirmationManager
-        showPanel()
+        self.promptBuilder = promptBuilder
+        self.terminalController = terminalController
+        super.init()
+        showWindow()
     }
 
-    func showPanel() {
-        let view = WidgetView(
+    func showWindow() {
+        let view = MainView(
             speechEngine: speechEngine,
             confirmationManager: confirmationManager,
+            promptBuilder: promptBuilder,
+            terminalController: terminalController,
             panelController: self
         )
-        let hostingView = NSHostingView(rootView: view)
+        .preferredColorScheme(.dark)
 
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 180, height: 32),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+        let hostingView = NSHostingView(rootView: view)
+        let miniSize = NSRect(x: 0, y: 0, width: 300, height: 90)
+
+        let window = NSWindow(
+            contentRect: miniSize,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        panel.isFloatingPanel = true
-        panel.level = .statusBar
-        panel.titlebarAppearsTransparent = true
-        panel.titleVisibility = .hidden
-        panel.isMovableByWindowBackground = true
-        panel.contentView = hostingView
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.title = "Voice Pilot"
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.contentView = hostingView
+        window.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+        window.isOpaque = true
+        window.hasShadow = true
+        window.minSize = NSSize(width: 260, height: 90)
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.level = .floating
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.delegate = self
 
-        // Position just below menu bar, right side
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
-            let x = screenFrame.maxX - 195
-            let y = screenFrame.maxY - 8
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+            let x = screenFrame.maxX - 320
+            let y = screenFrame.maxY - 110
+            window.setFrameOrigin(NSPoint(x: x, y: y))
         }
 
-        panel.orderFrontRegardless()
-        self.window = panel
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
     }
 
-    func toggle() {
+    // Green button (zoom) toggles mini/full
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        toggleMini()
+        return false // We handle it ourselves
+    }
+
+    func toggleMini() {
+        guard let window = window else { return }
         isMini.toggle()
-        // Resize window
-        if let window = window, let screen = NSScreen.main {
-            let origin = window.frame.origin
-            let newWidth: CGFloat = isMini ? 180 : 340
-            let newHeight: CGFloat = isMini ? 32 : 180
-            window.setFrame(NSRect(x: origin.x, y: origin.y, width: newWidth, height: newHeight), display: true, animate: true)
+        let origin = window.frame.origin
+
+        if isMini {
+            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 300, height: 90), display: true, animate: true)
+        } else {
+            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 320, height: 300), display: true, animate: true)
         }
     }
 }
 
-struct WidgetView: View {
+// MARK: - Main View
+
+struct MainView: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var confirmationManager: ConfirmationManager
+    @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var terminalController: TerminalController
     @ObservedObject var panelController: FloatingPanelController
 
-    var body: some View {
-        if panelController.isMini {
-            MiniView(
-                speechEngine: speechEngine,
-                confirmationManager: confirmationManager,
-                onTap: { panelController.toggle() }
-            )
-        } else {
-            ExpandedView(
-                speechEngine: speechEngine,
-                confirmationManager: confirmationManager,
-                onTap: { panelController.toggle() }
-            )
-        }
-    }
-}
-
-// MARK: - Mini View (tiny pill)
-
-struct MiniView: View {
-    @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var confirmationManager: ConfirmationManager
-    var onTap: () -> Void
+    let bg = Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0))
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(speechEngine.isListening ? Color.green : Color.red)
-                .frame(width: 7, height: 7)
-
-            if !speechEngine.currentTranscript.isEmpty {
-                Text(speechEngine.currentTranscript)
-                    .font(.system(size: 11, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundColor(.primary)
+        Group {
+            if panelController.isMini {
+                MiniContent(
+                    speechEngine: speechEngine,
+                    confirmationManager: confirmationManager
+                )
+            } else if promptBuilder.isActive {
+                BuilderContent(
+                    speechEngine: speechEngine,
+                    promptBuilder: promptBuilder
+                )
             } else {
-                Text(speechEngine.isListening ? "Listening..." : "Paused")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            if confirmationManager.isShowingConfirmation {
-                Text("Sent")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(.green)
+                FullContent(
+                    speechEngine: speechEngine,
+                    confirmationManager: confirmationManager,
+                    promptBuilder: promptBuilder,
+                    terminalController: terminalController
+                )
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(width: 180, height: 28)
-        .background(.ultraThinMaterial)
-        .cornerRadius(14)
-        .onTapGesture { onTap() }
-        .animation(.easeInOut(duration: 0.2), value: speechEngine.currentTranscript.isEmpty)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(bg)
     }
 }
 
-// MARK: - Expanded View (full panel)
+// MARK: - Mini Content
 
-struct ExpandedView: View {
+struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var confirmationManager: ConfirmationManager
-    var onTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header — tap to minimize
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            Spacer().frame(height: 22)
+
+            HStack(spacing: 8) {
                 Circle()
                     .fill(speechEngine.isListening ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                Text("Voice Pilot")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                Spacer()
-                Image(systemName: "minus.circle.fill")
-                    .foregroundColor(.secondary)
-                    .font(.system(size: 12))
-            }
-            .onTapGesture { onTap() }
+                    .frame(width: 7, height: 7)
 
-            Divider()
-
-            // Live transcript
-            if !speechEngine.currentTranscript.isEmpty {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "waveform")
-                        .foregroundColor(.blue)
-                        .font(.system(size: 10))
+                if !speechEngine.currentTranscript.isEmpty {
                     Text(speechEngine.currentTranscript)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.primary)
-                        .lineLimit(3)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                } else if confirmationManager.isShowingConfirmation {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.green)
+                        Text("Sent")
+                            .font(.system(size: 11))
+                            .foregroundColor(.green)
+                    }
+                } else {
+                    Text(speechEngine.isListening ? "Listening..." : "Paused")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color.white.opacity(0.3))
                 }
-                .padding(6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.blue.opacity(0.08))
-                .cornerRadius(6)
-            } else {
-                Text("Speak a command or prompt...")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(6)
-            }
 
-            // Confirmation
-            if confirmationManager.isShowingConfirmation {
-                Text(confirmationManager.refinedText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.green.opacity(0.1))
-                    .cornerRadius(6)
+                Spacer()
             }
+            .padding(.horizontal, 14)
 
-            Spacer(minLength: 0)
-
-            // Command hints
-            HStack(spacing: 8) {
-                commandHint("enter")
-                commandHint("yes/no")
-                commandHint("cancel")
-            }
-            .font(.system(size: 9, design: .monospaced))
-            .foregroundColor(.secondary)
+            Spacer()
         }
-        .padding(10)
-        .frame(width: 340, height: 180)
-        .background(.ultraThinMaterial)
-        .cornerRadius(10)
     }
+}
 
-    private func commandHint(_ text: String) -> some View {
-        Text(text)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.15))
-            .cornerRadius(3)
+// MARK: - Full Content
+
+struct FullContent: View {
+    @ObservedObject var speechEngine: SpeechEngine
+    @ObservedObject var confirmationManager: ConfirmationManager
+    @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var terminalController: TerminalController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                Spacer().frame(height: 22)
+
+                // Transcript
+                if !speechEngine.currentTranscript.isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 12))
+                            .foregroundColor(.blue)
+                        Text(speechEngine.currentTranscript)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .lineLimit(5)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.2))
+                        Text("Speak a command or prompt...")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color.white.opacity(0.2))
+                    }
+                }
+
+                if confirmationManager.isShowingConfirmation {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.green)
+                        Text(confirmationManager.refinedText)
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.6))
+                            .lineLimit(3)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            // Bottom bar
+            HStack(spacing: 12) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(speechEngine.isListening ? Color.green : Color.red)
+                        .frame(width: 6, height: 6)
+                    Text(speechEngine.isListening ? "Listening" : "Paused")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.white.opacity(0.3))
+                }
+
+                Spacer()
+
+                Button(action: { terminalController.terminalOnly.toggle() }) {
+                    Text(terminalController.terminalOnly ? "Terminal" : "Any App")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: { promptBuilder.start() }) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.03))
+        }
+    }
+}
+
+// MARK: - Builder Content
+
+struct BuilderContent: View {
+    @ObservedObject var speechEngine: SpeechEngine
+    @ObservedObject var promptBuilder: PromptBuilder
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                Spacer().frame(height: 22)
+
+                if !speechEngine.currentTranscript.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 10))
+                            .foregroundColor(.blue)
+                        Text(speechEngine.currentTranscript)
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.white.opacity(0.5))
+                            .lineLimit(2)
+                    }
+                }
+
+                if promptBuilder.isRefining {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                        Text("Refining...")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.4))
+                    }
+                } else if !promptBuilder.currentDraft.isEmpty {
+                    ScrollView {
+                        Text(promptBuilder.currentDraft)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Describe your prompt...")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color.white.opacity(0.25))
+                        Text("Speak freely. Refine as you go.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color.white.opacity(0.15))
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            HStack {
+                Picker("", selection: Binding(
+                    get: { promptBuilder.selectedModel },
+                    set: { promptBuilder.selectedModel = $0 }
+                )) {
+                    ForEach(BuilderModel.allCases, id: \.self) { model in
+                        Text(model.displayName).tag(model)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 120)
+                .controlSize(.small)
+
+                Spacer()
+
+                Text("\"send\" \u{2022} \"cancel\" \u{2022} \"start over\"")
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.white.opacity(0.25))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.03))
+        }
     }
 }

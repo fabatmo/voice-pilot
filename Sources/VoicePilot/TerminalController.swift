@@ -1,8 +1,8 @@
 import Foundation
 import AppKit
 
-class TerminalController {
-    var terminalOnly = true
+class TerminalController: ObservableObject {
+    @Published var terminalOnly = true
 
     func execute(_ command: TerminalCommand) {
         switch command {
