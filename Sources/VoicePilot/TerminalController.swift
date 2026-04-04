@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 
 class TerminalController {
+    var terminalOnly = true
 
     func execute(_ command: TerminalCommand) {
         switch command {
@@ -33,42 +34,51 @@ class TerminalController {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Activate terminal, paste, enter
-        let script = """
-        tell application "System Events"
-            set frontApp to name of first application process whose frontmost is true
-        end tell
+        let script: String
+        if terminalOnly {
+            script = """
+            -- Find terminal app
+            set termApp to ""
+            tell application "System Events"
+                if exists (process "Terminal") then
+                    set termApp to "Terminal"
+                else if exists (process "iTerm2") then
+                    set termApp to "iTerm2"
+                else if exists (process "kitty") then
+                    set termApp to "kitty"
+                else if exists (process "Alacritty") then
+                    set termApp to "Alacritty"
+                else if exists (process "WezTerm") then
+                    set termApp to "WezTerm"
+                else if exists (process "Ghostty") then
+                    set termApp to "Ghostty"
+                end if
+            end tell
 
-        -- Try to find the terminal app
-        set termApp to ""
-        tell application "System Events"
-            if exists (process "Terminal") then
-                set termApp to "Terminal"
-            else if exists (process "iTerm2") then
-                set termApp to "iTerm2"
-            else if exists (process "kitty") then
-                set termApp to "kitty"
-            else if exists (process "Alacritty") then
-                set termApp to "Alacritty"
-            else if exists (process "WezTerm") then
-                set termApp to "WezTerm"
-            else if exists (process "Ghostty") then
-                set termApp to "Ghostty"
+            if termApp is not "" then
+                tell application termApp to activate
+                delay 0.3
+                tell application "System Events"
+                    keystroke "v" using command down
+                end tell
+                delay 0.3
+                tell application "System Events"
+                    key code 36
+                end tell
             end if
-        end tell
-
-        if termApp is not "" then
-            tell application termApp to activate
-            delay 0.3
+            """
+        } else {
+            script = """
+            -- Send to whatever app is frontmost
             tell application "System Events"
                 keystroke "v" using command down
             end tell
-            delay 0.3
+            delay 0.2
             tell application "System Events"
                 key code 36
             end tell
-        end if
-        """
+            """
+        }
 
         runAppleScript(script)
 

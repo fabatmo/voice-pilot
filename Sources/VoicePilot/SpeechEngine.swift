@@ -14,7 +14,7 @@ class SpeechEngine: ObservableObject {
 
     // Silence detection
     private var silenceTimer: Timer?
-    private let silenceThreshold: TimeInterval = 0.8
+    private let silenceThreshold: TimeInterval = 2.0
     private var lastTranscript = ""
     private var lastDeliveryTime: Date = .distantPast
 
@@ -125,7 +125,13 @@ class SpeechEngine: ObservableObject {
     private func resetSilenceTimer(transcript: String, isFinal: Bool) {
         silenceTimer?.invalidate()
 
+        // If silence timer already delivered for this recognition session, ignore isFinal
         if isFinal {
+            let now = Date()
+            if now.timeIntervalSince(lastDeliveryTime) < 1.5 {
+                // Already delivered via silence timer — skip
+                return
+            }
             deliverUtterance(transcript)
             return
         }
@@ -133,16 +139,16 @@ class SpeechEngine: ObservableObject {
         silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
             guard let self = self else { return }
             let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty && text != self.lastTranscript {
+            if !text.isEmpty {
                 self.deliverUtterance(text)
             }
         }
     }
 
     private func deliverUtterance(_ text: String) {
-        // Dedup — ignore if same text delivered within 2 seconds
+        // Dedup — block any delivery within 3 seconds of last one
         let now = Date()
-        if text == lastTranscript && now.timeIntervalSince(lastDeliveryTime) < 2.0 {
+        if now.timeIntervalSince(lastDeliveryTime) < 1.5 {
             return
         }
 

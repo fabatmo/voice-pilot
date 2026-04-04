@@ -38,6 +38,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
+            terminalController: terminalController!,
             onQuit: { NSApp.terminate(nil) }
         )
 
