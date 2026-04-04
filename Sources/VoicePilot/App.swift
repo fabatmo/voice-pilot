@@ -69,8 +69,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return
             }
-            // "cancel" / "discard" — exit builder without sending
-            if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind" {
+            // "cancel" / "discard" / "voice control" — exit builder without sending
+            if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind"
+                || trimmed == "voice control" || trimmed == "back to voice"
+                || trimmed == "switch to voice" || trimmed == "switch to voice control" {
                 promptBuilder?.stop()
                 return
             }
@@ -87,7 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // --- Normal mode ---
 
         // Voice command to activate prompt builder
-        if trimmed == "build prompt" || trimmed == "prompt builder" || trimmed == "draft mode" || trimmed == "builder" {
+        if trimmed == "build prompt" || trimmed == "prompt builder" || trimmed == "draft mode" || trimmed == "builder" || trimmed == "go for it" {
             promptBuilder?.start()
             return
         }

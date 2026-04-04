@@ -213,35 +213,37 @@ struct FullContent: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             // Bottom bar
-            HStack(spacing: 12) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(speechEngine.isListening ? Color.green : Color.red)
-                        .frame(width: 6, height: 6)
-                    Text(speechEngine.isListening ? "Listening" : "Paused")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.white.opacity(0.3))
-                }
+            VStack(spacing: 8) {
+                // Native mode toggle
+                NativeSegmentedToggle(
+                    items: ["Voice Control", "Prompt Builder"],
+                    selectedIndex: Binding(
+                        get: { 0 },
+                        set: { idx in if idx == 1 { promptBuilder.start() } }
+                    )
+                )
+                .frame(height: 24)
 
-                Spacer()
-
-                Button(action: { terminalController.terminalOnly.toggle() }) {
-                    Text(terminalController.terminalOnly ? "Terminal" : "Any App")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.white.opacity(0.4))
+                // Status row
+                HStack {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(speechEngine.isListening ? Color.green : Color.red)
+                            .frame(width: 6, height: 6)
+                        Text(speechEngine.isListening ? "Listening" : "Paused")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.white.opacity(0.25))
+                    }
+                    Spacer()
+                    NativeButton(title: terminalController.terminalOnly ? "Terminal" : "Any App") {
+                        terminalController.terminalOnly.toggle()
+                    }
+                    .frame(width: 70, height: 20)
                 }
-                .buttonStyle(.plain)
-
-                Button(action: { promptBuilder.start() }) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.white.opacity(0.4))
-                }
-                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.white.opacity(0.03))
+            .background(Color.white.opacity(0.02))
         }
     }
 }
@@ -300,28 +302,41 @@ struct BuilderContent: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            HStack {
-                Picker("", selection: Binding(
-                    get: { promptBuilder.selectedModel },
-                    set: { promptBuilder.selectedModel = $0 }
-                )) {
-                    ForEach(BuilderModel.allCases, id: \.self) { model in
-                        Text(model.displayName).tag(model)
+            VStack(spacing: 8) {
+                // Native mode toggle
+                NativeSegmentedToggle(
+                    items: ["Voice Control", "Prompt Builder"],
+                    selectedIndex: Binding(
+                        get: { 1 },
+                        set: { idx in if idx == 0 { promptBuilder.stop() } }
+                    )
+                )
+                .frame(height: 24)
+
+                // Model + hints row
+                HStack {
+                    Picker("", selection: Binding(
+                        get: { promptBuilder.selectedModel },
+                        set: { promptBuilder.selectedModel = $0 }
+                    )) {
+                        ForEach(BuilderModel.allCases, id: \.self) { model in
+                            Text(model.displayName).tag(model)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(width: 110)
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    Text("\"send\" \u{2022} \"cancel\"")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.2))
                 }
-                .pickerStyle(.menu)
-                .frame(width: 120)
-                .controlSize(.small)
-
-                Spacer()
-
-                Text("\"send\" \u{2022} \"cancel\" \u{2022} \"start over\"")
-                    .font(.system(size: 10))
-                    .foregroundColor(Color.white.opacity(0.25))
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.white.opacity(0.03))
+            .background(Color.white.opacity(0.02))
         }
     }
 }
