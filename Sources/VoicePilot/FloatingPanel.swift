@@ -218,8 +218,11 @@ struct FullContent: View {
                 NativeSegmentedToggle(
                     items: ["Voice Control", "Prompt Builder"],
                     selectedIndex: Binding(
-                        get: { 0 },
-                        set: { idx in if idx == 1 { promptBuilder.start() } }
+                        get: { promptBuilder.isActive ? 1 : 0 },
+                        set: { idx in
+                            if idx == 1 { promptBuilder.start() }
+                            else { promptBuilder.stop() }
+                        }
                     )
                 )
                 .frame(height: 24)
@@ -307,8 +310,11 @@ struct BuilderContent: View {
                 NativeSegmentedToggle(
                     items: ["Voice Control", "Prompt Builder"],
                     selectedIndex: Binding(
-                        get: { 1 },
-                        set: { idx in if idx == 0 { promptBuilder.stop() } }
+                        get: { promptBuilder.isActive ? 1 : 0 },
+                        set: { idx in
+                            if idx == 1 { promptBuilder.start() }
+                            else { promptBuilder.stop() }
+                        }
                     )
                 )
                 .frame(height: 24)
