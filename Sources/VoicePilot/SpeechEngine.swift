@@ -76,6 +76,10 @@ class SpeechEngine: ObservableObject {
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let request = recognitionRequest else { return }
         request.shouldReportPartialResults = true
+        request.requiresOnDeviceRecognition = false  // Use server for better accuracy
+        if #available(macOS 13, *) {
+            request.addsPunctuation = true
+        }
 
         recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self = self else { return }
