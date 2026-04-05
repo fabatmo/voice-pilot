@@ -6,11 +6,13 @@ class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
     private var onQuit: () -> Void
+    private var onShowWindow: () -> Void
     private var cancellables = Set<AnyCancellable>()
 
-    init(speechEngine: SpeechEngine, onQuit: @escaping () -> Void) {
+    init(speechEngine: SpeechEngine, onQuit: @escaping () -> Void, onShowWindow: @escaping () -> Void) {
         self.speechEngine = speechEngine
         self.onQuit = onQuit
+        self.onShowWindow = onShowWindow
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
@@ -44,6 +46,11 @@ class StatusBarController {
 
         menu.addItem(.separator())
 
+        let showItem = NSMenuItem(title: "Show Window", action: #selector(showWindow), keyEquivalent: "w")
+        showItem.keyEquivalentModifierMask = [.command]
+        showItem.target = self
+        menu.addItem(showItem)
+
         let toggleItem = NSMenuItem(
             title: speechEngine.isListening ? "Pause Listening" : "Start Listening",
             action: #selector(toggleListening),
@@ -60,6 +67,10 @@ class StatusBarController {
         menu.addItem(quitItem)
 
         return menu
+    }
+
+    @objc private func showWindow() {
+        onShowWindow()
     }
 
     @objc private func toggleListening() {

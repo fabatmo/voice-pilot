@@ -38,17 +38,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleUtterance(utterance)
         }
 
-        statusBar = StatusBarController(
-            speechEngine: speechEngine!,
-            onQuit: { NSApp.terminate(nil) }
-        )
-
         // Show persistent floating panel with all controls
         floatingPanel = FloatingPanelController(
             speechEngine: speechEngine!,
             confirmationManager: confirmationManager!,
             promptBuilder: promptBuilder!,
             terminalController: terminalController!
+        )
+
+        statusBar = StatusBarController(
+            speechEngine: speechEngine!,
+            onQuit: { NSApp.terminate(nil) },
+            onShowWindow: { [weak self] in
+                self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)
+            }
         )
 
         speechEngine?.startListening()
