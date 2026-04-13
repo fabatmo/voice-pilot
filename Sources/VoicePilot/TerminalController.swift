@@ -111,6 +111,67 @@ class TerminalController: ObservableObject {
         }
     }
 
+    /// Always works — press Enter to frontmost app, or find target app if needed
+    func activateTerminalAndPressEnter() {
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        let isSelf = frontApp?.bundleIdentifier == Bundle.main.bundleIdentifier
+
+        // If frontmost is a real app (not VoicePilot), just press Enter
+        if !isSelf {
+            let script = """
+            tell application "System Events"
+                key code 36
+            end tell
+            """
+            runAppleScript(script)
+            return
+        }
+
+        // VoicePilot is frontmost — need to find the right app
+        if terminalOnly {
+            // Find a terminal
+            let apps = terminalApps.map { "\"\($0)\"" }.joined(separator: ", ")
+            let script = """
+            set termApps to {\(apps)}
+            set termApp to ""
+            tell application "System Events"
+                repeat with appName in termApps
+                    if exists (process appName) then
+                        set termApp to appName as text
+                        exit repeat
+                    end if
+                end repeat
+            end tell
+
+            if termApp is not "" then
+                tell application termApp to activate
+                delay 0.3
+                tell application "System Events"
+                    key code 36
+                end tell
+            end if
+            """
+            runAppleScript(script)
+        } else {
+            // Any app mode — find last regular app
+            if let lastApp = NSWorkspace.shared.runningApplications.first(where: {
+                $0.isActive == false &&
+                $0.activationPolicy == .regular &&
+                $0.bundleIdentifier != Bundle.main.bundleIdentifier
+            }) {
+                lastApp.activate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    let script = """
+                    tell application "System Events"
+                        key code 36
+                    end tell
+                    """
+                    self?.runAppleScript(script)
+                }
+            }
+        }
+    }
+
     func pressEnter() {
         if terminalOnly && !frontmostIsTerminal { return }
 
@@ -137,6 +198,26 @@ class TerminalController: ObservableObject {
             pasteboard.setString(saved, forType: .string)
         }
         savedClipboard = nil
+    }
+
+    /// Replace terminal text: move to end, backspace exact count, paste new text — all in one script
+    func replaceTerminalText(deleteCount: Int, newText: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(newText, forType: .string)
+
+        var script = "tell application \"System Events\"\n"
+        if deleteCount > 0 {
+            // Move to end of input first
+            script += "    key code 14 using control down\n"  // Ctrl+E
+            script += "    repeat \(deleteCount) times\n"
+            script += "        key code 51\n"  // backspace
+            script += "    end repeat\n"
+        }
+        script += "    keystroke \"v\" using command down\n"
+        script += "end tell"
+
+        runAppleScript(script)
     }
 
     /// Clear entire input line (Ctrl+E to end, Ctrl+U to kill backward) then paste

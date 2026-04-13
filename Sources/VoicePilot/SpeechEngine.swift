@@ -14,7 +14,7 @@ class SpeechEngine: ObservableObject {
 
     // Silence detection
     private var silenceTimer: Timer?
-    private let silenceThreshold: TimeInterval = 2.0
+    private let silenceThreshold: TimeInterval = 1.5
     private var lastTranscript = ""
     private var lastDeliveryTime: Date = .distantPast
 

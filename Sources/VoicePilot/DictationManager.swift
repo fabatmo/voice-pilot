@@ -5,6 +5,7 @@ import Combine
 class DictationManager: ObservableObject {
     @Published var isActive = false
     @Published var accumulatedText = ""
+    private var lastAppendedText = ""
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -26,6 +27,9 @@ class DictationManager: ObservableObject {
     func appendUtterance(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Dedup — skip if same as last appended
+        guard trimmed != lastAppendedText else { return }
+        lastAppendedText = trimmed
 
         if accumulatedText.isEmpty {
             accumulatedText = trimmed
@@ -36,6 +40,7 @@ class DictationManager: ObservableObject {
 
     func clear() {
         accumulatedText = ""
+        lastAppendedText = ""
     }
 
     // MARK: - Mouse Button Monitor (CGEvent tap)

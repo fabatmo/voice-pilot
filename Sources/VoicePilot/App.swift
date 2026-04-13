@@ -28,6 +28,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationCurrentText = ""
     /// Suppress partials after submit to prevent doubles
     private var dictationSuppressUntil: Date = .distantPast
+    /// Prevent concurrent terminal updates
+    private var isUpdatingTerminal = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hide dock icon — menu bar only
@@ -48,13 +50,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleUtterance(utterance)
         }
 
-        // Live-type partial transcripts using character-level diff
-        speechEngine?.$currentTranscript
-            .debounce(for: .milliseconds(200), scheduler: RunLoop.main)
-            .sink { [weak self] partial in
-                self?.handleDictationPartial(partial)
-            }
-            .store(in: &cancellables)
+        // No partial updates to terminal — only finalized utterances are appended
 
         // Show persistent floating panel with all controls
         floatingPanel = FloatingPanelController(
@@ -74,14 +70,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         speechEngine?.startListening()
+
+        // Default to dictation mode
+        terminalController?.saveClipboard()
+        dictationManager?.start()
     }
 
     // MARK: - Dictation live typing
 
     private func handleDictationPartial(_ partial: String) {
         guard dictationManager?.isActive == true else { return }
-        // Suppress after submit
         guard Date() > dictationSuppressUntil else { return }
+        guard !isUpdatingTerminal else { return }
 
         let clean = partial.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
@@ -98,21 +98,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard !fullLine.isEmpty else { return }
-        guard fullLine != dictationCurrentText else { return }  // No change
+        guard fullLine != dictationCurrentText else { return }
 
-        // Character-level diff: find common prefix, only change the tail
-        let commonLen = zip(dictationCurrentText, fullLine).prefix(while: { $0 == $1 }).count
-        let charsToDelete = dictationCurrentText.count - commonLen
-        let newSuffix = String(fullLine.dropFirst(commonLen))
+        isUpdatingTerminal = true
 
-        if charsToDelete > 0 {
-            terminalController?.deleteBackward(count: charsToDelete)
-        }
-        if !newSuffix.isEmpty {
-            terminalController?.typeText(newSuffix)
-        }
-
+        // Delete old text with exact backspace count, then paste new
+        let deleteCount = dictationCurrentText.count
+        terminalController?.replaceTerminalText(deleteCount: deleteCount, newText: fullLine)
         dictationCurrentText = fullLine
+
+        // Unlock after AppleScript has time to execute
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.isUpdatingTerminal = false
+        }
     }
 
     private func handleUtterance(_ text: String) {
@@ -139,32 +137,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // --- Dictation mode ---
         if dictationManager?.isActive == true {
-            // Suppress after submit
             guard Date() > dictationSuppressUntil else { return }
 
-            // Voice commands to control dictation
             if trimmed == "clear" || trimmed == "clear dictation" || trimmed == "start over" {
-                if !dictationCurrentText.isEmpty {
-                    terminalController?.clearLineAndPaste("")
-                    dictationCurrentText = ""
-                }
                 dictationManager?.clear()
+                dictationCurrentText = ""
                 return
             }
             if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind"
                 || trimmed.contains("voice control") || trimmed.contains("back to voice")
                 || trimmed.contains("switch to voice") {
-                if !dictationCurrentText.isEmpty {
-                    terminalController?.clearLineAndPaste("")
-                    dictationCurrentText = ""
-                }
                 terminalController?.restoreClipboard()
                 dictationManager?.stop()
+                dictationCurrentText = ""
                 return
             }
 
-            // Utterance finalized — text is already in terminal from partials.
-            // Just commit it so the next partial builds on top.
+            // Utterance finalized — append to terminal (no replacing, no flickering)
+            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            guard !clean.isEmpty else { return }
+
+            let toType = dictationCurrentText.isEmpty ? clean : " " + clean
+            terminalController?.typeText(toType)
+            dictationCurrentText += toType
             dictationManager?.appendUtterance(text)
             return
         }
@@ -249,8 +245,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dictationCurrentText = ""
         dictationManager?.clear()
         speechEngine?.currentTranscript = ""
-        terminalController?.restoreClipboard()
-        terminalController?.pressEnter()
+        // Always send Enter — activate terminal if needed
+        terminalController?.activateTerminalAndPressEnter()
         terminalController?.saveClipboard()
     }
 }
