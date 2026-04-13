@@ -9,6 +9,7 @@ class DictationManager: ObservableObject {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var keyMonitor: Any?
 
     var onMouseButton: (() -> Void)?
 
@@ -16,12 +17,14 @@ class DictationManager: ObservableObject {
         isActive = true
         accumulatedText = ""
         startMouseMonitor()
+        startKeyMonitor()
     }
 
     func stop() {
         isActive = false
         accumulatedText = ""
         stopMouseMonitor()
+        stopKeyMonitor()
     }
 
     func appendUtterance(_ text: String) {
@@ -48,7 +51,7 @@ class DictationManager: ObservableObject {
     private func startMouseMonitor() {
         stopMouseMonitor()
 
-        let eventMask: CGEventMask = (1 << CGEventType.otherMouseDown.rawValue)
+        let eventMask: CGEventMask = (1 << CGEventType.otherMouseDown.rawValue) | (1 << CGEventType.keyDown.rawValue)
 
         // Store self as unmanaged pointer for the C callback
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
@@ -68,8 +71,20 @@ class DictationManager: ObservableObject {
                     DispatchQueue.main.async {
                         manager.onMouseButton?()
                     }
-                    // Consume the event — don't let terminal paste clipboard
                     return nil
+                }
+
+                // Ctrl+Shift+S (keyCode 1 = S) as global submit trigger
+                if type == .keyDown && manager.isActive {
+                    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+                    let flags = event.flags
+                    if keyCode == 1 && flags.contains(.maskControl) && flags.contains(.maskShift) {
+                        print("[Dictation] Ctrl+Shift+S pressed — submit")
+                        DispatchQueue.main.async {
+                            manager.onMouseButton?()
+                        }
+                        return nil
+                    }
                 }
 
                 return Unmanaged.passUnretained(event)
@@ -104,6 +119,30 @@ class DictationManager: ObservableObject {
         }
     }
 
+    // MARK: - Global keyboard shortcut (Ctrl+Return)
+
+    private func startKeyMonitor() {
+        stopKeyMonitor()
+        // Monitor Ctrl+Return globally as alternative submit trigger
+        keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, self.isActive else { return }
+            // Ctrl+Return: keyCode 36 = Return, control flag
+            if event.keyCode == 36 && event.modifierFlags.contains(.control) {
+                print("[Dictation] Ctrl+Return pressed")
+                DispatchQueue.main.async {
+                    self.onMouseButton?()
+                }
+            }
+        }
+    }
+
+    private func stopKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
     private func stopMouseMonitor() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -121,5 +160,6 @@ class DictationManager: ObservableObject {
 
     deinit {
         stopMouseMonitor()
+        stopKeyMonitor()
     }
 }
