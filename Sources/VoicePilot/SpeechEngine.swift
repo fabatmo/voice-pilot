@@ -91,7 +91,9 @@ class SpeechEngine: ObservableObject {
                 }
 
                 // Reset silence timer on new speech
-                self.resetSilenceTimer(transcript: transcript, isFinal: result.isFinal)
+                DispatchQueue.main.async {
+                    self.resetSilenceTimer(transcript: transcript, isFinal: result.isFinal)
+                }
             }
 
             if error != nil || (result?.isFinal == true) {
@@ -132,7 +134,7 @@ class SpeechEngine: ObservableObject {
         // If silence timer already delivered for this recognition session, ignore isFinal
         if isFinal {
             let now = Date()
-            if now.timeIntervalSince(lastDeliveryTime) < 1.5 {
+            if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
                 // Already delivered via silence timer — skip
                 return
             }
@@ -150,9 +152,9 @@ class SpeechEngine: ObservableObject {
     }
 
     private func deliverUtterance(_ text: String) {
-        // Dedup — block any delivery within 3 seconds of last one
+        // Dedup — block any delivery within 2.5 seconds of last one
         let now = Date()
-        if now.timeIntervalSince(lastDeliveryTime) < 1.5 {
+        if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
             return
         }
 

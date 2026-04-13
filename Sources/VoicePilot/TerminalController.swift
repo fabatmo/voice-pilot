@@ -4,6 +4,17 @@ import AppKit
 class TerminalController: ObservableObject {
     @Published var terminalOnly = true
 
+    private let terminalApps: Set<String> = [
+        "Terminal", "iTerm2", "kitty", "Alacritty",
+        "WezTerm", "Ghostty", "Warp", "Hyper", "Rio"
+    ]
+
+    /// Check if the frontmost app is a terminal
+    private var frontmostIsTerminal: Bool {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName else { return false }
+        return terminalApps.contains(frontApp)
+    }
+
     func execute(_ command: TerminalCommand) {
         switch command {
         case .enter:
@@ -25,51 +36,30 @@ class TerminalController: ObservableObject {
         }
     }
 
-    func pasteAndEnter(_ text: String) {
-        // Save current clipboard
+    /// Find a terminal, activate it, paste text, and press Enter
+    func activateTerminalAndPasteEnter(_ text: String) {
         let pasteboard = NSPasteboard.general
         let previousContents = pasteboard.string(forType: .string)
 
-        // Set clipboard to our text
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        let script: String
-        if terminalOnly {
-            script = """
-            -- Find terminal app
-            set termApp to ""
-            tell application "System Events"
-                if exists (process "Terminal") then
-                    set termApp to "Terminal"
-                else if exists (process "iTerm2") then
-                    set termApp to "iTerm2"
-                else if exists (process "kitty") then
-                    set termApp to "kitty"
-                else if exists (process "Alacritty") then
-                    set termApp to "Alacritty"
-                else if exists (process "WezTerm") then
-                    set termApp to "WezTerm"
-                else if exists (process "Ghostty") then
-                    set termApp to "Ghostty"
+        let apps = terminalApps.map { "\"\($0)\"" }.joined(separator: ", ")
+        let script = """
+        set termApps to {\(apps)}
+        set termApp to ""
+        tell application "System Events"
+            repeat with appName in termApps
+                if exists (process appName) then
+                    set termApp to appName as text
+                    exit repeat
                 end if
-            end tell
+            end repeat
+        end tell
 
-            if termApp is not "" then
-                tell application termApp to activate
-                delay 0.3
-                tell application "System Events"
-                    keystroke "v" using command down
-                end tell
-                delay 0.3
-                tell application "System Events"
-                    key code 36
-                end tell
-            end if
-            """
-        } else {
-            script = """
-            -- Send to whatever app is frontmost
+        if termApp is not "" then
+            tell application termApp to activate
+            delay 0.3
             tell application "System Events"
                 keystroke "v" using command down
             end tell
@@ -77,12 +67,10 @@ class TerminalController: ObservableObject {
             tell application "System Events"
                 key code 36
             end tell
-            """
-        }
-
+        end if
+        """
         runAppleScript(script)
 
-        // Restore clipboard after a delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             if let previous = previousContents {
                 pasteboard.clearContents()
@@ -91,7 +79,127 @@ class TerminalController: ObservableObject {
         }
     }
 
+    func pasteAndEnter(_ text: String) {
+        if terminalOnly && !frontmostIsTerminal {
+            print("[TerminalController] Frontmost app is not a terminal — skipping")
+            return
+        }
+
+        let pasteboard = NSPasteboard.general
+        let previousContents = pasteboard.string(forType: .string)
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        // Send to frontmost app — no app switching
+        let script = """
+        tell application "System Events"
+            keystroke "v" using command down
+        end tell
+        delay 0.2
+        tell application "System Events"
+            key code 36
+        end tell
+        """
+        runAppleScript(script)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            if let previous = previousContents {
+                pasteboard.clearContents()
+                pasteboard.setString(previous, forType: .string)
+            }
+        }
+    }
+
+    func pressEnter() {
+        if terminalOnly && !frontmostIsTerminal { return }
+
+        let script = """
+        tell application "System Events"
+            key code 36
+        end tell
+        """
+        runAppleScript(script)
+    }
+
+    private var savedClipboard: String?
+
+    /// Save clipboard before dictation starts
+    func saveClipboard() {
+        savedClipboard = NSPasteboard.general.string(forType: .string)
+    }
+
+    /// Restore clipboard after dictation ends
+    func restoreClipboard() {
+        if let saved = savedClipboard {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(saved, forType: .string)
+        }
+        savedClipboard = nil
+    }
+
+    /// Clear entire input line (Ctrl+E to end, Ctrl+U to kill backward) then paste
+    func clearLineAndPaste(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        // Ctrl+E = move to end of line, Ctrl+U = kill line backward, then paste
+        let script = """
+        tell application "System Events"
+            key code 14 using control down
+            key code 32 using control down
+            keystroke "v" using command down
+        end tell
+        """
+        runAppleScript(script)
+    }
+
+    /// Paste text at cursor via clipboard (instant, no flicker)
+    func pasteText(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        let script = """
+        tell application "System Events"
+            keystroke "v" using command down
+        end tell
+        """
+        runAppleScript(script)
+    }
+
+    /// Type text at cursor position via keystrokes
+    func typeText(_ text: String) {
+        let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        guard !escaped.isEmpty else { return }
+
+        let script = """
+        tell application "System Events"
+            keystroke "\(escaped)"
+        end tell
+        """
+        runAppleScript(script)
+    }
+
+    /// Delete N characters backward (backspace)
+    func deleteBackward(count: Int) {
+        guard count > 0 else { return }
+        let script = """
+        tell application "System Events"
+            repeat \(count) times
+                key code 51
+            end repeat
+        end tell
+        """
+        runAppleScript(script)
+    }
+
     private func sendToTerminal(text: String) {
+        if terminalOnly && !frontmostIsTerminal { return }
+
         let escaped = text.replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
         tell application "System Events"
@@ -102,6 +210,8 @@ class TerminalController: ObservableObject {
     }
 
     private func sendToTerminal(keystroke key: String, using modifier: String? = nil) {
+        if terminalOnly && !frontmostIsTerminal { return }
+
         let script: String
         if let modifier = modifier {
             script = """
@@ -129,6 +239,10 @@ class TerminalController: ObservableObject {
         case "downArrow": return 125
         default: return 0
         }
+    }
+
+    func runScript(_ source: String) {
+        runAppleScript(source)
     }
 
     private func runAppleScript(_ source: String) {

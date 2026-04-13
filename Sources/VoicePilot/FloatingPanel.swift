@@ -8,13 +8,15 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     private var confirmationManager: ConfirmationManager
     private var promptBuilder: PromptBuilder
     private var terminalController: TerminalController
+    private var dictationManager: DictationManager
     @Published var isMini = true
 
-    init(speechEngine: SpeechEngine, confirmationManager: ConfirmationManager, promptBuilder: PromptBuilder, terminalController: TerminalController) {
+    init(speechEngine: SpeechEngine, confirmationManager: ConfirmationManager, promptBuilder: PromptBuilder, terminalController: TerminalController, dictationManager: DictationManager) {
         self.speechEngine = speechEngine
         self.confirmationManager = confirmationManager
         self.promptBuilder = promptBuilder
         self.terminalController = terminalController
+        self.dictationManager = dictationManager
         super.init()
         showWindow()
     }
@@ -25,6 +27,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
             confirmationManager: confirmationManager,
             promptBuilder: promptBuilder,
             terminalController: terminalController,
+            dictationManager: dictationManager,
             panelController: self
         )
         .preferredColorScheme(.dark)
@@ -88,6 +91,7 @@ struct MainView: View {
     @ObservedObject var confirmationManager: ConfirmationManager
     @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var terminalController: TerminalController
+    @ObservedObject var dictationManager: DictationManager
     @ObservedObject var panelController: FloatingPanelController
 
     let bg = Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0))
@@ -97,19 +101,29 @@ struct MainView: View {
             if panelController.isMini {
                 MiniContent(
                     speechEngine: speechEngine,
-                    confirmationManager: confirmationManager
+                    confirmationManager: confirmationManager,
+                    dictationManager: dictationManager
+                )
+            } else if dictationManager.isActive {
+                DictationContent(
+                    speechEngine: speechEngine,
+                    dictationManager: dictationManager,
+                    promptBuilder: promptBuilder,
+                    terminalController: terminalController
                 )
             } else if promptBuilder.isActive {
                 BuilderContent(
                     speechEngine: speechEngine,
-                    promptBuilder: promptBuilder
+                    promptBuilder: promptBuilder,
+                    dictationManager: dictationManager
                 )
             } else {
                 FullContent(
                     speechEngine: speechEngine,
                     confirmationManager: confirmationManager,
                     promptBuilder: promptBuilder,
-                    terminalController: terminalController
+                    terminalController: terminalController,
+                    dictationManager: dictationManager
                 )
             }
         }
@@ -123,6 +137,7 @@ struct MainView: View {
 struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var confirmationManager: ConfirmationManager
+    @ObservedObject var dictationManager: DictationManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -130,10 +145,21 @@ struct MiniContent: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(speechEngine.isListening ? Color.green : Color.red)
+                    .fill(dictationManager.isActive ? Color.orange : (speechEngine.isListening ? Color.green : Color.red))
                     .frame(width: 7, height: 7)
 
-                if !speechEngine.currentTranscript.isEmpty {
+                if dictationManager.isActive {
+                    if !speechEngine.currentTranscript.isEmpty {
+                        Text(speechEngine.currentTranscript)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white)
+                            .lineLimit(2)
+                    } else {
+                        Text("Dictating...")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.5))
+                    }
+                } else if !speechEngine.currentTranscript.isEmpty {
                     Text(speechEngine.currentTranscript)
                         .font(.system(size: 12))
                         .foregroundColor(.white)
@@ -169,6 +195,13 @@ struct FullContent: View {
     @ObservedObject var confirmationManager: ConfirmationManager
     @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var terminalController: TerminalController
+    @ObservedObject var dictationManager: DictationManager
+
+    private var modeIndex: Int {
+        if dictationManager.isActive { return 2 }
+        if promptBuilder.isActive { return 1 }
+        return 0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -214,16 +247,9 @@ struct FullContent: View {
 
             // Bottom bar
             VStack(spacing: 8) {
-                // Native mode toggle
-                NativeSegmentedToggle(
-                    items: ["Voice Control", "Prompt Builder"],
-                    selectedIndex: Binding(
-                        get: { promptBuilder.isActive ? 1 : 0 },
-                        set: { idx in
-                            if idx == 1 { promptBuilder.start() }
-                            else { promptBuilder.stop() }
-                        }
-                    )
+                ModeToggle(
+                    promptBuilder: promptBuilder,
+                    dictationManager: dictationManager
                 )
                 .frame(height: 24)
 
@@ -260,6 +286,7 @@ struct FullContent: View {
 struct BuilderContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var dictationManager: DictationManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -310,16 +337,9 @@ struct BuilderContent: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             VStack(spacing: 8) {
-                // Native mode toggle
-                NativeSegmentedToggle(
-                    items: ["Voice Control", "Prompt Builder"],
-                    selectedIndex: Binding(
-                        get: { promptBuilder.isActive ? 1 : 0 },
-                        set: { idx in
-                            if idx == 1 { promptBuilder.start() }
-                            else { promptBuilder.stop() }
-                        }
-                    )
+                ModeToggle(
+                    promptBuilder: promptBuilder,
+                    dictationManager: dictationManager
                 )
                 .frame(height: 24)
 
@@ -348,5 +368,112 @@ struct BuilderContent: View {
             .padding(.vertical, 10)
             .background(Color.white.opacity(0.02))
         }
+    }
+}
+
+// MARK: - Dictation Content
+
+struct DictationContent: View {
+    @ObservedObject var speechEngine: SpeechEngine
+    @ObservedObject var dictationManager: DictationManager
+    @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var terminalController: TerminalController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                Spacer().frame(height: 22)
+
+                // Live transcript — typing into terminal in real-time
+                if !speechEngine.currentTranscript.isEmpty {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
+                        Text(speechEngine.currentTranscript)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .lineLimit(5)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.white.opacity(0.2))
+                        Text("Speak — text types live into terminal")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color.white.opacity(0.2))
+                    }
+                }
+
+                if !dictationManager.accumulatedText.isEmpty {
+                    Text(dictationManager.accumulatedText)
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.white.opacity(0.3))
+                        .lineLimit(3)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            VStack(spacing: 8) {
+                ModeToggle(
+                    promptBuilder: promptBuilder,
+                    dictationManager: dictationManager
+                )
+                .frame(height: 24)
+
+                HStack {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(speechEngine.isListening ? Color.green : Color.red)
+                            .frame(width: 6, height: 6)
+                        Text("Dictation")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.white.opacity(0.25))
+                    }
+                    Spacer()
+                    Text("mouse btn = Enter")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.2))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.02))
+        }
+    }
+}
+
+// MARK: - Mode Toggle (shared across all content views)
+
+struct ModeToggle: View {
+    @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var dictationManager: DictationManager
+
+    private var modeIndex: Int {
+        if dictationManager.isActive { return 2 }
+        if promptBuilder.isActive { return 1 }
+        return 0
+    }
+
+    var body: some View {
+        NativeSegmentedToggle(
+            items: ["Voice", "Builder", "Dictation"],
+            selectedIndex: Binding(
+                get: { modeIndex },
+                set: { idx in
+                    // Deactivate all first
+                    promptBuilder.stop()
+                    dictationManager.stop()
+                    // Activate selected
+                    switch idx {
+                    case 1: promptBuilder.start()
+                    case 2: dictationManager.start()
+                    default: break
+                    }
+                }
+            )
+        )
     }
 }
