@@ -251,8 +251,11 @@ class TerminalController: ObservableObject {
         runAppleScript(script)
     }
 
-    /// Type text at cursor position via keystrokes
+    /// Type text at cursor position via keystrokes — only when a terminal is frontmost
     func typeText(_ text: String) {
+        // Never inject keystrokes into non-terminal apps (YouTube, Safari, etc.)
+        if terminalOnly && !frontmostIsTerminal { return }
+
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         guard !escaped.isEmpty else { return }
