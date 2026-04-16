@@ -412,12 +412,13 @@ struct DictationContent: View {
                     }
                 }
 
-                if !dictationManager.accumulatedText.isEmpty {
-                    Text(dictationManager.accumulatedText)
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.white.opacity(0.3))
-                        .lineLimit(3)
-                }
+                TextEditor(text: $dictationManager.accumulatedText)
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.white.opacity(0.7))
+                    .scrollContentBackground(.hidden)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
