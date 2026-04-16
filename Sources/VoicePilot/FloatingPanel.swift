@@ -180,6 +180,11 @@ struct MiniContent: View {
                 }
 
                 Spacer()
+
+                NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
+                    speechEngine.toggleListening()
+                }
+                .frame(width: 58, height: 18)
             }
             .padding(.horizontal, 14)
 
@@ -343,7 +348,7 @@ struct BuilderContent: View {
                 )
                 .frame(height: 24)
 
-                // Model + hints row
+                // Model + mute row
                 HStack {
                     Picker("", selection: Binding(
                         get: { promptBuilder.selectedModel },
@@ -359,9 +364,10 @@ struct BuilderContent: View {
 
                     Spacer()
 
-                    Text("\"send\" \u{2022} \"cancel\"")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.white.opacity(0.2))
+                    NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
+                        speechEngine.toggleListening()
+                    }
+                    .frame(width: 65, height: 20)
                 }
             }
             .padding(.horizontal, 14)
@@ -433,9 +439,10 @@ struct DictationContent: View {
                             .foregroundColor(Color.white.opacity(0.25))
                     }
                     Spacer()
-                    Text("mouse btn = Enter")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.white.opacity(0.2))
+                    NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
+                        speechEngine.toggleListening()
+                    }
+                    .frame(width: 65, height: 20)
                 }
             }
             .padding(.horizontal, 14)

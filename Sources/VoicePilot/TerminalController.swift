@@ -327,11 +327,22 @@ class TerminalController: ObservableObject {
     }
 
     private func runAppleScript(_ source: String) {
+        let logMsg = "[AS] \(Date()): \(source.prefix(80))"
+        let data = (logMsg + "\n").data(using: .utf8)!
+        if let fh = FileHandle(forWritingAtPath: "/tmp/voicepilot_as.log") {
+            fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: "/tmp/voicepilot_as.log", contents: data)
+        }
+
         if let script = NSAppleScript(source: source) {
             var error: NSDictionary?
             script.executeAndReturnError(&error)
             if let error = error {
-                print("[TerminalController] AppleScript error: \(error)")
+                let errMsg = "[AS-ERROR] \(error)\n"
+                if let errData = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/voicepilot_as.log") {
+                    fh.seekToEndOfFile(); fh.write(errData); fh.closeFile()
+                }
             }
         }
     }

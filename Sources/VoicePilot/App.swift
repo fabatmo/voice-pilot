@@ -117,43 +117,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return }
 
-        // Mute/unmute commands
-        if trimmed == "mute" || trimmed == "shut up" || trimmed == "stop listening" || trimmed == "pause" {
-            speechEngine?.stopListening()
-            return
-        }
-
-        // Window control commands
-        if trimmed == "expand" || trimmed == "open" || trimmed == "open up" || trimmed == "bigger" || trimmed == "make it bigger" || trimmed.contains("expand") {
-            floatingPanel?.toggleMini()
-            return
-        }
-        if trimmed == "minimize" || trimmed == "collapse" || trimmed == "shrink" {
-            if floatingPanel?.isMini == false {
-                floatingPanel?.toggleMini()
+        // Confirmation flow — kept for prompt acceptance via voice
+        if confirmationManager?.isShowingConfirmation == true {
+            if trimmed == "send" || trimmed == "go" || trimmed == "yes" || trimmed == "ok" || trimmed == "okay" || trimmed == "accept" {
+                confirmationManager?.confirmNow()
+                return
             }
-            return
+            if trimmed == "cancel" || trimmed == "no" || trimmed == "abort" {
+                confirmationManager?.cancel()
+                return
+            }
         }
 
-        // --- Dictation mode ---
+        // Dictation mode — append everything, no keyword matching
         if dictationManager?.isActive == true {
             guard Date() > dictationSuppressUntil else { return }
 
-            if trimmed == "clear" || trimmed == "clear dictation" || trimmed == "start over" {
-                dictationManager?.clear()
-                dictationCurrentText = ""
-                return
-            }
-            if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind"
-                || trimmed.contains("voice control") || trimmed.contains("back to voice")
-                || trimmed.contains("switch to voice") {
-                terminalController?.restoreClipboard()
-                dictationManager?.stop()
-                dictationCurrentText = ""
-                return
-            }
-
-            // Utterance finalized — append to terminal (no replacing, no flickering)
             let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "\n", with: " ")
             guard !clean.isEmpty else { return }
@@ -165,72 +144,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // --- Prompt Builder mode ---
+        // Prompt Builder mode — pass input through (no keyword commands)
         if promptBuilder?.isActive == true {
-            if trimmed == "send" || trimmed == "done" || trimmed == "ship it" || trimmed == "send it" {
-                if let draft = promptBuilder?.currentDraft, !draft.isEmpty {
-                    terminalController?.pasteAndEnter(draft)
-                    confirmationManager?.showBriefly(draft)
-                    promptBuilder?.stop()
-                }
-                return
-            }
-            if trimmed == "cancel" || trimmed == "discard" || trimmed == "nevermind"
-                || trimmed.contains("voice control") || trimmed.contains("back to voice")
-                || trimmed.contains("switch to voice") {
-                promptBuilder?.stop()
-                return
-            }
-            if trimmed == "start over" || trimmed == "reset" {
-                promptBuilder?.start()
-                return
-            }
             promptBuilder?.addInput(text) {
                 print("[App] Builder refinement complete")
             }
             return
         }
 
-        // --- Normal mode ---
-
-        // Voice command to activate dictation mode
-        if trimmed == "dictation" || trimmed == "dictation mode" || trimmed.contains("switch to dictation") || trimmed == "dictate" {
-            promptBuilder?.stop()
-            dictationCurrentText = ""
-            terminalController?.saveClipboard()
-            dictationManager?.start()
-            return
-        }
-
-        // Voice command to activate prompt builder
-        if trimmed.contains("build prompt") || trimmed.contains("prompt builder") || trimmed.contains("prompt mode") || trimmed.contains("switch to prompt") || trimmed == "draft mode" || trimmed == "builder" || trimmed == "go for it" || trimmed == "prompt" {
-            dictationManager?.stop()
-            promptBuilder?.start()
-            return
-        }
-
-        // Check if it's a confirmation/cancel for pending prompt
-        if confirmationManager?.isShowingConfirmation == true {
-            if trimmed == "send" || trimmed == "go" || trimmed == "yes" {
-                confirmationManager?.confirmNow()
-                return
-            }
-            if trimmed == "cancel" || trimmed == "no" || trimmed == "abort" {
-                confirmationManager?.cancel()
-                return
-            }
-        }
-
-        // Check if it's a terminal command
-        if let command = commandDetector?.detect(trimmed) {
-            DispatchQueue.main.async { [weak self] in
-                self?.statusBar?.flash(command.description)
-                self?.terminalController?.execute(command)
-            }
-            return
-        }
-
-        // It's a prompt — clean up and send directly to terminal
+        // Normal mode — send as prompt to terminal
         promptRefiner?.refine(text) { [weak self] refined in
             DispatchQueue.main.async {
                 self?.confirmationManager?.showBriefly(refined)
