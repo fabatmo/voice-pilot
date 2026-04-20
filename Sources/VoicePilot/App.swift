@@ -129,7 +129,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Dictation mode — append everything, no keyword matching
+        // Dictation mode — accumulate in TextEditor + type live into terminal (if frontmost)
         if dictationManager?.isActive == true {
             guard Date() > dictationSuppressUntil else { return }
 
@@ -137,9 +137,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 .replacingOccurrences(of: "\n", with: " ")
             guard !clean.isEmpty else { return }
 
+            // Type live into terminal (guarded — skips if YouTube etc. is frontmost)
             let toType = dictationCurrentText.isEmpty ? clean : " " + clean
             terminalController?.typeText(toType)
             dictationCurrentText += toType
+
+            // Also accumulate in TextEditor for copy/edit
             dictationManager?.appendUtterance(text)
             return
         }
@@ -162,13 +165,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func submitDictation() {
-        // Suppress partials for 3 seconds to prevent doubles
+        // Only press Enter if terminal is frontmost
+        guard terminalController?.isTerminalFrontmost == true else { return }
+
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
         dictationCurrentText = ""
         dictationManager?.clear()
         speechEngine?.currentTranscript = ""
-        // Always send Enter — activate terminal if needed
-        terminalController?.activateTerminalAndPressEnter()
-        terminalController?.saveClipboard()
+        terminalController?.pressEnter()
     }
 }

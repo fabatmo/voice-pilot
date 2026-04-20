@@ -10,6 +10,7 @@ class TerminalController: ObservableObject {
     ]
 
     /// Check if the frontmost app is a terminal
+    var isTerminalFrontmost: Bool { frontmostIsTerminal }
     private var frontmostIsTerminal: Bool {
         guard let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName else { return false }
         return terminalApps.contains(frontApp)

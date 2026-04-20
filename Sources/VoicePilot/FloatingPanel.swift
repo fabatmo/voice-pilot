@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// Panel that allows text editing without stealing focus from other apps
+class NonActivatingPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     var window: NSWindow?
     private var speechEngine: SpeechEngine
@@ -35,34 +41,36 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         let hostingView = NSHostingView(rootView: view)
         let miniSize = NSRect(x: 0, y: 0, width: 300, height: 90)
 
-        let window = NSWindow(
+        let panel = NonActivatingPanel(
             contentRect: miniSize,
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel, .utilityWindow],
             backing: .buffered,
             defer: false
         )
-        window.title = "Voice Pilot"
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.contentView = hostingView
-        window.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
-        window.isOpaque = true
-        window.hasShadow = true
-        window.minSize = NSSize(width: 260, height: 90)
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.level = .floating
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.delegate = self
+        panel.title = "Voice Pilot"
+        panel.titlebarAppearsTransparent = true
+        panel.isMovableByWindowBackground = true
+        panel.contentView = hostingView
+        panel.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
+        panel.isOpaque = true
+        panel.hasShadow = true
+        panel.minSize = NSSize(width: 260, height: 90)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.level = .floating
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.delegate = self
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
 
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.maxX - 320
             let y = screenFrame.maxY - 110
-            window.setFrameOrigin(NSPoint(x: x, y: y))
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
         }
 
-        window.makeKeyAndOrderFront(nil)
-        self.window = window
+        panel.orderFront(nil)
+        self.window = panel
     }
 
     // Green button (zoom) toggles mini/full
@@ -444,6 +452,10 @@ struct DictationContent: View {
                         speechEngine.toggleListening()
                     }
                     .frame(width: 65, height: 20)
+                    NativeButton(title: terminalController.terminalOnly ? "Terminal" : "Any App") {
+                        terminalController.terminalOnly.toggle()
+                    }
+                    .frame(width: 70, height: 20)
                 }
             }
             .padding(.horizontal, 14)
