@@ -201,26 +201,6 @@ class TerminalController: ObservableObject {
         savedClipboard = nil
     }
 
-    /// Replace terminal text: move to end, backspace exact count, paste new text — all in one script
-    func replaceTerminalText(deleteCount: Int, newText: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(newText, forType: .string)
-
-        var script = "tell application \"System Events\"\n"
-        if deleteCount > 0 {
-            // Move to end of input first
-            script += "    key code 14 using control down\n"  // Ctrl+E
-            script += "    repeat \(deleteCount) times\n"
-            script += "        key code 51\n"  // backspace
-            script += "    end repeat\n"
-        }
-        script += "    keystroke \"v\" using command down\n"
-        script += "end tell"
-
-        runAppleScript(script)
-    }
-
     /// Clear entire input line (Ctrl+E to end, Ctrl+U to kill backward) then paste
     func clearLineAndPaste(_ text: String) {
         let pasteboard = NSPasteboard.general
@@ -331,6 +311,7 @@ class TerminalController: ObservableObject {
     }
 
     private func runAppleScript(_ source: String) {
+        #if DEBUG
         let logMsg = "[AS] \(Date()): \(source.prefix(80))"
         let data = (logMsg + "\n").data(using: .utf8)!
         if let fh = FileHandle(forWritingAtPath: "/tmp/voicepilot_as.log") {
@@ -338,16 +319,19 @@ class TerminalController: ObservableObject {
         } else {
             FileManager.default.createFile(atPath: "/tmp/voicepilot_as.log", contents: data)
         }
+        #endif
 
         if let script = NSAppleScript(source: source) {
             var error: NSDictionary?
             script.executeAndReturnError(&error)
+            #if DEBUG
             if let error = error {
                 let errMsg = "[AS-ERROR] \(error)\n"
                 if let errData = errMsg.data(using: .utf8), let fh = FileHandle(forWritingAtPath: "/tmp/voicepilot_as.log") {
                     fh.seekToEndOfFile(); fh.write(errData); fh.closeFile()
                 }
             }
+            #endif
         }
     }
 }

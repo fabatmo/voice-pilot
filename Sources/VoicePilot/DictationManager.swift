@@ -1,8 +1,10 @@
 import Foundation
 import AppKit
 import Combine
+import os
 
 func vpLog(_ msg: String) {
+    #if DEBUG
     let line = "\(Date()): \(msg)\n"
     if let data = line.data(using: .utf8) {
         let path = "/tmp/voicepilot_debug.log"
@@ -12,6 +14,7 @@ func vpLog(_ msg: String) {
             FileManager.default.createFile(atPath: path, contents: data)
         }
     }
+    #endif
 }
 
 class DictationManager: ObservableObject {
@@ -28,13 +31,14 @@ class DictationManager: ObservableObject {
     private var retryCount = 0
     private let maxRetries = 10
     private var lastSubmitTime: Date = .distantPast
-    private var _active: Int32 = 0
+    /// Thread-safe active flag read from the CGEventTap callback thread.
+    private let activeFlag = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     var onMouseButton: (() -> Void)?
 
     func start() {
         isActive = true
-        OSAtomicOr32Barrier(1, &_active)
+        activeFlag.withLock { $0 = true }
         accumulatedText = ""
         lastAppendedText = ""
 
@@ -48,7 +52,7 @@ class DictationManager: ObservableObject {
 
     func stop() {
         isActive = false
-        OSAtomicAnd32Barrier(0, &_active)
+        activeFlag.withLock { $0 = false }
         accumulatedText = ""
         lastAppendedText = ""
         stopMouseMonitor()
@@ -108,14 +112,14 @@ class DictationManager: ObservableObject {
                     return Unmanaged.passUnretained(event)
                 }
 
-                guard manager._active != 0 else {
+                guard manager.activeFlag.withLock({ $0 }) else {
                     return Unmanaged.passUnretained(event)
                 }
 
                 // Mouse button — consume and submit (with debounce)
                 if type == .otherMouseDown {
                     let button = event.getIntegerValueField(.mouseEventButtonNumber)
-                    vpLog("[DM] Mouse button \(button), active=\(manager._active)")
+                    vpLog("[DM] Mouse button \(button)")
                     let now = Date()
                     guard now.timeIntervalSince(manager.lastSubmitTime) > 0.5 else {
                         vpLog("[DM] Debounced")

@@ -15,7 +15,6 @@ struct VoicePilotApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBar: StatusBarController?
     var speechEngine: SpeechEngine?
-    var commandDetector: CommandDetector?
     var promptRefiner: PromptRefiner?
     var terminalController: TerminalController?
     var confirmationManager: ConfirmationManager?
@@ -24,19 +23,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var dictationManager: DictationManager?
 
     private var cancellables = Set<AnyCancellable>()
-    /// What's currently in the terminal from dictation
     private var dictationCurrentText = ""
-    /// Suppress partials after submit to prevent doubles
     private var dictationSuppressUntil: Date = .distantPast
-    /// Prevent concurrent terminal updates
-    private var isUpdatingTerminal = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hide dock icon — menu bar only
         NSApp.setActivationPolicy(.accessory)
 
         terminalController = TerminalController()
-        commandDetector = CommandDetector()
         promptRefiner = PromptRefiner()
         confirmationManager = ConfirmationManager(terminalController: terminalController!)
         promptBuilder = PromptBuilder()
@@ -76,60 +69,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dictationManager?.start()
     }
 
-    // MARK: - Dictation live typing
-
-    private func handleDictationPartial(_ partial: String) {
-        guard dictationManager?.isActive == true else { return }
-        guard Date() > dictationSuppressUntil else { return }
-        guard !isUpdatingTerminal else { return }
-
-        let clean = partial.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: " ")
-
-        // Build full line: committed text + current partial
-        let committed = dictationManager?.accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let fullLine: String
-        if committed.isEmpty {
-            fullLine = clean
-        } else if clean.isEmpty {
-            return
-        } else {
-            fullLine = committed + " " + clean
-        }
-
-        guard !fullLine.isEmpty else { return }
-        guard fullLine != dictationCurrentText else { return }
-
-        isUpdatingTerminal = true
-
-        // Delete old text with exact backspace count, then paste new
-        let deleteCount = dictationCurrentText.count
-        terminalController?.replaceTerminalText(deleteCount: deleteCount, newText: fullLine)
-        dictationCurrentText = fullLine
-
-        // Unlock after AppleScript has time to execute
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.isUpdatingTerminal = false
-        }
-    }
-
     private func handleUtterance(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return }
 
-        // Confirmation flow — kept for prompt acceptance via voice
-        if confirmationManager?.isShowingConfirmation == true {
-            if trimmed == "send" || trimmed == "go" || trimmed == "yes" || trimmed == "ok" || trimmed == "okay" || trimmed == "accept" {
-                confirmationManager?.confirmNow()
-                return
-            }
-            if trimmed == "cancel" || trimmed == "no" || trimmed == "abort" {
-                confirmationManager?.cancel()
-                return
-            }
-        }
-
-        // Dictation mode — accumulate in TextEditor + type live into terminal (if frontmost)
         if dictationManager?.isActive == true {
             guard Date() > dictationSuppressUntil else { return }
 
@@ -165,8 +108,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func submitDictation() {
-        // Only press Enter if terminal is frontmost
-        guard terminalController?.isTerminalFrontmost == true else { return }
+        // Terminal-only mode: require a terminal to be frontmost.
+        // Any App mode: always submit to whatever is frontmost.
+        if terminalController?.terminalOnly == true,
+           terminalController?.isTerminalFrontmost != true {
+            return
+        }
 
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
         dictationCurrentText = ""
