@@ -39,7 +39,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         .preferredColorScheme(.dark)
 
         let hostingView = NSHostingView(rootView: view)
-        let miniSize = NSRect(x: 0, y: 0, width: 300, height: 90)
+        let miniSize = NSRect(x: 0, y: 0, width: 310, height: 90)
 
         let panel = NonActivatingPanel(
             contentRect: miniSize,
@@ -54,7 +54,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         panel.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
         panel.isOpaque = true
         panel.hasShadow = true
-        panel.minSize = NSSize(width: 260, height: 90)
+        panel.minSize = NSSize(width: 310, height: 90)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.level = .floating
         panel.appearance = NSAppearance(named: .darkAqua)
@@ -64,7 +64,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
-            let x = screenFrame.maxX - 320
+            let x = screenFrame.maxX - 330
             let y = screenFrame.maxY - 110
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         }
@@ -85,9 +85,9 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         let origin = window.frame.origin
 
         if isMini {
-            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 300, height: 90), display: true, animate: true)
+            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 310, height: 90), display: true, animate: true)
         } else {
-            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 320, height: 300), display: true, animate: true)
+            window.setFrame(NSRect(x: origin.x, y: origin.y, width: 310, height: 300), display: true, animate: true)
         }
     }
 }
@@ -258,38 +258,12 @@ struct FullContent: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            // Bottom bar
-            VStack(spacing: 8) {
-                ModeToggle(
-                    promptBuilder: promptBuilder,
-                    dictationManager: dictationManager
-                )
-                .frame(height: 24)
-
-                // Status row
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(speechEngine.isListening ? Color.green : Color.red)
-                            .frame(width: 6, height: 6)
-                        Text(speechEngine.isListening ? "Listening" : "Muted")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color.white.opacity(0.25))
-                    }
-                    Spacer()
-                    NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
-                        speechEngine.toggleListening()
-                    }
-                    .frame(width: 65, height: 20)
-                    NativeButton(title: terminalController.terminalOnly ? "Terminal" : "Any App") {
-                        terminalController.terminalOnly.toggle()
-                    }
-                    .frame(width: 70, height: 20)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.02))
+            BottomToolbar(
+                speechEngine: speechEngine,
+                promptBuilder: promptBuilder,
+                dictationManager: dictationManager,
+                terminalController: terminalController
+            )
         }
     }
 }
@@ -349,38 +323,12 @@ struct BuilderContent: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            VStack(spacing: 8) {
-                ModeToggle(
-                    promptBuilder: promptBuilder,
-                    dictationManager: dictationManager
-                )
-                .frame(height: 24)
-
-                // Model + mute row
-                HStack {
-                    Picker("", selection: Binding(
-                        get: { promptBuilder.selectedModel },
-                        set: { promptBuilder.selectedModel = $0 }
-                    )) {
-                        ForEach(BuilderModel.allCases, id: \.self) { model in
-                            Text(model.displayName).tag(model)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 110)
-                    .controlSize(.small)
-
-                    Spacer()
-
-                    NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
-                        speechEngine.toggleListening()
-                    }
-                    .frame(width: 65, height: 20)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.02))
+            BottomToolbar(
+                speechEngine: speechEngine,
+                promptBuilder: promptBuilder,
+                dictationManager: dictationManager,
+                terminalController: nil
+            )
         }
     }
 }
@@ -431,69 +379,88 @@ struct DictationContent: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            VStack(spacing: 8) {
-                ModeToggle(
-                    promptBuilder: promptBuilder,
-                    dictationManager: dictationManager
-                )
-                .frame(height: 24)
-
-                HStack {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(speechEngine.isListening ? Color.green : Color.red)
-                            .frame(width: 6, height: 6)
-                        Text("Dictation")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color.white.opacity(0.25))
-                    }
-                    Spacer()
-                    NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
-                        speechEngine.toggleListening()
-                    }
-                    .frame(width: 65, height: 20)
-                    NativeButton(title: terminalController.terminalOnly ? "Terminal" : "Any App") {
-                        terminalController.terminalOnly.toggle()
-                    }
-                    .frame(width: 70, height: 20)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.white.opacity(0.02))
+            BottomToolbar(
+                speechEngine: speechEngine,
+                promptBuilder: promptBuilder,
+                dictationManager: dictationManager,
+                terminalController: terminalController
+            )
         }
     }
 }
 
-// MARK: - Mode Toggle (shared across all content views)
+// MARK: - Toolbar button — all buttons in the bar use this exact style
 
-struct ModeToggle: View {
+private let tbButtonWidth: CGFloat = 54
+
+struct TBButton: View {
+    let title: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .tint(active ? .accentColor : nil)
+            .frame(width: tbButtonWidth)
+    }
+}
+
+// MARK: - Bottom toolbar — 5 identical buttons, equal spread
+
+struct BottomToolbar: View {
+    @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var dictationManager: DictationManager
+    /// nil = don't render the target button (e.g. Builder mode).
+    var terminalController: TerminalController?
 
-    private var modeIndex: Int {
+    private func selectMode(_ idx: Int) {
+        promptBuilder.stop()
+        dictationManager.stop()
+        switch idx {
+        case 1: promptBuilder.start()
+        case 2: dictationManager.start()
+        default: break
+        }
+    }
+
+    private var activeModeIndex: Int {
         if dictationManager.isActive { return 2 }
         if promptBuilder.isActive { return 1 }
         return 0
     }
 
     var body: some View {
-        NativeSegmentedToggle(
-            items: ["Voice", "Builder", "Dictation"],
-            selectedIndex: Binding(
-                get: { modeIndex },
-                set: { idx in
-                    // Deactivate all first
-                    promptBuilder.stop()
-                    dictationManager.stop()
-                    // Activate selected
-                    switch idx {
-                    case 1: promptBuilder.start()
-                    case 2: dictationManager.start()
-                    default: break
-                    }
-                }
-            )
-        )
+        HStack(spacing: 0) {
+            TBButton(title: "Voice", active: activeModeIndex == 0) { selectMode(0) }
+            Spacer(minLength: 4)
+            TBButton(title: "Builder", active: activeModeIndex == 1) { selectMode(1) }
+            Spacer(minLength: 4)
+            TBButton(title: "Dictation", active: activeModeIndex == 2) { selectMode(2) }
+            Spacer(minLength: 4)
+            TBButton(title: speechEngine.isListening ? "Mute" : "Unmute", active: false) {
+                speechEngine.toggleListening()
+            }
+            if let terminalController {
+                Spacer(minLength: 4)
+                TargetButtonInline(terminalController: terminalController)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
     }
 }
+
+/// Thin wrapper so the target button observes TerminalController only when it actually renders.
+private struct TargetButtonInline: View {
+    @ObservedObject var terminalController: TerminalController
+    var body: some View {
+        TBButton(title: terminalController.terminalOnly ? "Terminal" : "Any App", active: false) {
+            terminalController.terminalOnly.toggle()
+        }
+    }
+}
+

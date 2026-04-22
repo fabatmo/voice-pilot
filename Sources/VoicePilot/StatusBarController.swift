@@ -5,12 +5,14 @@ import Combine
 class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
+    private var promptBuilder: PromptBuilder
     private var onQuit: () -> Void
     private var onShowWindow: () -> Void
     private var cancellables = Set<AnyCancellable>()
 
-    init(speechEngine: SpeechEngine, onQuit: @escaping () -> Void, onShowWindow: @escaping () -> Void) {
+    init(speechEngine: SpeechEngine, promptBuilder: PromptBuilder, onQuit: @escaping () -> Void, onShowWindow: @escaping () -> Void) {
         self.speechEngine = speechEngine
+        self.promptBuilder = promptBuilder
         self.onQuit = onQuit
         self.onShowWindow = onShowWindow
 
@@ -62,11 +64,36 @@ class StatusBarController {
 
         menu.addItem(.separator())
 
+        // Builder model submenu
+        let modelItem = NSMenuItem(title: "Builder Model", action: nil, keyEquivalent: "")
+        let modelMenu = NSMenu()
+        for model in BuilderModel.allCases {
+            let item = NSMenuItem(
+                title: model.displayName,
+                action: #selector(selectModel(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = model.rawValue
+            item.state = (promptBuilder.selectedModel == model) ? .on : .off
+            modelMenu.addItem(item)
+        }
+        modelItem.submenu = modelMenu
+        menu.addItem(modelItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit Voice Pilot", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
         return menu
+    }
+
+    @objc private func selectModel(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let model = BuilderModel(rawValue: raw) else { return }
+        promptBuilder.selectedModel = model
     }
 
     @objc private func showWindow() {

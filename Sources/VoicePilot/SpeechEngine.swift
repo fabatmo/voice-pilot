@@ -25,7 +25,9 @@ class SpeechEngine: ObservableObject {
     func startListening() {
         requestPermissions { [weak self] granted in
             guard granted else {
+                #if DEBUG
                 print("Speech recognition permission denied")
+                #endif
                 return
             }
             DispatchQueue.main.async {
@@ -57,9 +59,11 @@ class SpeechEngine: ObservableObject {
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
             let granted = status == .authorized
+            #if DEBUG
             if !granted {
                 print("Speech recognition not authorized: \(status.rawValue)")
             }
+            #endif
             completion(granted)
         }
     }
@@ -124,7 +128,9 @@ class SpeechEngine: ObservableObject {
                 self.currentTranscript = ""
             }
         } catch {
+            #if DEBUG
             print("Audio engine failed to start: \(error)")
+            #endif
         }
     }
 
