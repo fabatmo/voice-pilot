@@ -16,27 +16,6 @@ class TerminalController: ObservableObject {
         return terminalApps.contains(frontApp)
     }
 
-    func execute(_ command: TerminalCommand) {
-        switch command {
-        case .enter:
-            sendToTerminal(keystroke: "return")
-        case .confirm:
-            sendToTerminal(text: "y")
-            usleep(100_000)
-            sendToTerminal(keystroke: "return")
-        case .deny:
-            sendToTerminal(text: "n")
-            usleep(100_000)
-            sendToTerminal(keystroke: "return")
-        case .cancel:
-            sendToTerminal(keystroke: "c", using: "control down")
-        case .scrollUp:
-            sendToTerminal(keystroke: "upArrow", using: "shift down")
-        case .scrollDown:
-            sendToTerminal(keystroke: "downArrow", using: "shift down")
-        }
-    }
-
     /// Find a terminal, activate it, paste text, and press Enter
     func activateTerminalAndPasteEnter(_ text: String) {
         let pasteboard = NSPasteboard.general
@@ -82,7 +61,9 @@ class TerminalController: ObservableObject {
 
     func pasteAndEnter(_ text: String) {
         if terminalOnly && !frontmostIsTerminal {
+            #if DEBUG
             print("[TerminalController] Frontmost app is not a terminal — skipping")
+            #endif
             return
         }
 
@@ -234,7 +215,8 @@ class TerminalController: ObservableObject {
 
     /// Type text at cursor position via keystrokes — only when a terminal is frontmost
     func typeText(_ text: String) {
-        // Never inject keystrokes into non-terminal apps (YouTube, Safari, etc.)
+        // In Terminal-only mode, skip if frontmost is a non-terminal. In Any App
+        // mode, keystrokes are sent to whatever is frontmost — that's by design.
         if terminalOnly && !frontmostIsTerminal { return }
 
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")

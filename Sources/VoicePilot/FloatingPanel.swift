@@ -262,8 +262,7 @@ struct FullContent: View {
                 speechEngine: speechEngine,
                 promptBuilder: promptBuilder,
                 dictationManager: dictationManager,
-                terminalController: terminalController,
-                showTargetButton: true
+                terminalController: terminalController
             )
         }
     }
@@ -328,8 +327,7 @@ struct BuilderContent: View {
                 speechEngine: speechEngine,
                 promptBuilder: promptBuilder,
                 dictationManager: dictationManager,
-                terminalController: TerminalController(),
-                showTargetButton: false
+                terminalController: nil
             )
         }
     }
@@ -385,8 +383,7 @@ struct DictationContent: View {
                 speechEngine: speechEngine,
                 promptBuilder: promptBuilder,
                 dictationManager: dictationManager,
-                terminalController: terminalController,
-                showTargetButton: true
+                terminalController: terminalController
             )
         }
     }
@@ -416,8 +413,8 @@ struct BottomToolbar: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var dictationManager: DictationManager
-    @ObservedObject var terminalController: TerminalController
-    let showTargetButton: Bool
+    /// nil = don't render the target button (e.g. Builder mode).
+    var terminalController: TerminalController?
 
     private func selectMode(_ idx: Int) {
         promptBuilder.stop()
@@ -446,11 +443,9 @@ struct BottomToolbar: View {
             TBButton(title: speechEngine.isListening ? "Mute" : "Unmute", active: false) {
                 speechEngine.toggleListening()
             }
-            if showTargetButton {
+            if let terminalController {
                 Spacer(minLength: 4)
-                TBButton(title: terminalController.terminalOnly ? "Terminal" : "Any App", active: false) {
-                    terminalController.terminalOnly.toggle()
-                }
+                TargetButtonInline(terminalController: terminalController)
             }
         }
         .padding(.horizontal, 10)
@@ -459,37 +454,13 @@ struct BottomToolbar: View {
     }
 }
 
-// MARK: - Mode Toggle (shared across all content views)
-
-struct ModeToggle: View {
-    @ObservedObject var promptBuilder: PromptBuilder
-    @ObservedObject var dictationManager: DictationManager
-
-    private var modeIndex: Int {
-        if dictationManager.isActive { return 2 }
-        if promptBuilder.isActive { return 1 }
-        return 0
-    }
-
+/// Thin wrapper so the target button observes TerminalController only when it actually renders.
+private struct TargetButtonInline: View {
+    @ObservedObject var terminalController: TerminalController
     var body: some View {
-        Picker("", selection: Binding(
-            get: { modeIndex },
-            set: { idx in
-                promptBuilder.stop()
-                dictationManager.stop()
-                switch idx {
-                case 1: promptBuilder.start()
-                case 2: dictationManager.start()
-                default: break
-                }
-            }
-        )) {
-            Text("Voice").tag(0)
-            Text("Builder").tag(1)
-            Text("Dictation").tag(2)
+        TBButton(title: terminalController.terminalOnly ? "Terminal" : "Any App", active: false) {
+            terminalController.terminalOnly.toggle()
         }
-        .pickerStyle(.segmented)
-        .controlSize(.mini)
-        .labelsHidden()
     }
 }
+

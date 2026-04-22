@@ -64,7 +64,9 @@ class PromptBuilder: ObservableObject {
 
     private func buildPrompt(completion: @escaping (String) -> Void) {
         guard !apiKey.isEmpty else {
+            #if DEBUG
             print("[PromptBuilder] No API key — using concatenation fallback")
+            #endif
             let combined = conversationHistory
                 .filter { $0.role == "user" }
                 .map { $0.text }
@@ -72,7 +74,9 @@ class PromptBuilder: ObservableObject {
             completion(combined)
             return
         }
+        #if DEBUG
         print("[PromptBuilder] Using API with model: \(selectedModel.rawValue)")
+        #endif
 
         let systemPrompt = """
         You are a prompt builder. The user is dictating a prompt for Claude Code CLI via voice.
@@ -115,13 +119,17 @@ class PromptBuilder: ObservableObject {
 
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             if let error = error {
+                #if DEBUG
                 print("[PromptBuilder] Network error: \(error)")
+                #endif
                 let fallback = self?.conversationHistory.filter { $0.role == "user" }.map { $0.text }.joined(separator: " ") ?? ""
                 completion(fallback)
                 return
             }
             guard let data = data else {
+                #if DEBUG
                 print("[PromptBuilder] No data received")
+                #endif
                 let fallback = self?.conversationHistory.filter { $0.role == "user" }.map { $0.text }.joined(separator: " ") ?? ""
                 completion(fallback)
                 return
@@ -132,10 +140,11 @@ class PromptBuilder: ObservableObject {
                     completion(text.trimmingCharacters(in: .whitespacesAndNewlines))
                     return
                 }
-                // API error response
+                #if DEBUG
                 if let errorInfo = json["error"] as? [String: Any] {
                     print("[PromptBuilder] API error: \(errorInfo)")
                 }
+                #endif
             }
             // Fallback: concatenate user inputs
             let fallback = self?.conversationHistory.filter { $0.role == "user" }.map { $0.text }.joined(separator: " ") ?? ""

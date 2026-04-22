@@ -56,6 +56,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
+            promptBuilder: promptBuilder!,
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
                 self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)
@@ -93,7 +94,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Prompt Builder mode — pass input through (no keyword commands)
         if promptBuilder?.isActive == true {
             promptBuilder?.addInput(text) {
+                #if DEBUG
                 print("[App] Builder refinement complete")
+                #endif
             }
             return
         }
