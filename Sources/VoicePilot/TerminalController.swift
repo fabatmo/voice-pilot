@@ -154,8 +154,9 @@ class TerminalController: ObservableObject {
         }
     }
 
+    /// Dictation submit — always targets a terminal. Does nothing if no terminal is frontmost.
     func pressEnter() {
-        if terminalOnly && !frontmostIsTerminal { return }
+        if !frontmostIsTerminal { return }
 
         let script = """
         tell application "System Events"
@@ -214,10 +215,10 @@ class TerminalController: ObservableObject {
     }
 
     /// Type text at cursor position via keystrokes — only when a terminal is frontmost
+    /// Dictation live-typing — always goes into a terminal. Never types into Safari/YouTube/etc.,
+    /// regardless of the Terminal/Any App toggle (that toggle is only for voice-mode paste).
     func typeText(_ text: String) {
-        // In Terminal-only mode, skip if frontmost is a non-terminal. In Any App
-        // mode, keystrokes are sent to whatever is frontmost — that's by design.
-        if terminalOnly && !frontmostIsTerminal { return }
+        if !frontmostIsTerminal { return }
 
         let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
