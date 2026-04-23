@@ -111,12 +111,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func submitDictation() {
-        // Terminal-only mode: require a terminal to be frontmost.
-        // Any App mode: always submit to whatever is frontmost.
-        if terminalController?.terminalOnly == true,
-           terminalController?.isTerminalFrontmost != true {
-            return
-        }
+        // Dictation submit is always terminal-targeted, regardless of the Terminal/Any App
+        // toggle. If no terminal is frontmost, the middle-click is still consumed (YouTube
+        // isolation) but the submit is a no-op and the buffer is preserved.
+        guard terminalController?.isTerminalFrontmost == true else { return }
 
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
         dictationCurrentText = ""
