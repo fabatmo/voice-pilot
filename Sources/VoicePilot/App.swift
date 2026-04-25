@@ -81,13 +81,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 .replacingOccurrences(of: "\n", with: " ")
             guard !clean.isEmpty else { return }
 
-            // Type live into terminal (guarded — skips if YouTube etc. is frontmost)
+            // Type live into the destination. typeText returns whether delivery succeeded:
+            // - terminal frontmost → keystroke (always succeeds)
+            // - other app with focused text field → AX direct insert
+            // - Finder / video player / no focus / Terminal-only mode but no terminal → false
             let toType = dictationCurrentText.isEmpty ? clean : " " + clean
-            terminalController?.typeText(toType)
-            dictationCurrentText += toType
-
-            // Also accumulate in TextEditor for copy/edit
-            dictationManager?.appendUtterance(text)
+            let delivered = terminalController?.typeText(toType) ?? false
+            if delivered {
+                dictationCurrentText += toType
+                // Don't accumulate in the panel — the destination already has the text.
+            } else {
+                // Delivery failed (no focused field, etc.) — keep it in the panel buffer
+                // so the user has a fallback transcript.
+                dictationManager?.appendUtterance(text)
+            }
             return
         }
 

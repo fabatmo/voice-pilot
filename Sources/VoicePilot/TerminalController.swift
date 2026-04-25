@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ApplicationServices
 
 class TerminalController: ObservableObject {
     @Published var terminalOnly = true
@@ -214,22 +215,59 @@ class TerminalController: ObservableObject {
         runAppleScript(script)
     }
 
-    /// Type text at cursor position via keystrokes — only when a terminal is frontmost
-    /// Dictation live-typing — always goes into a terminal. Never types into Safari/YouTube/etc.,
-    /// regardless of the Terminal/Any App toggle (that toggle is only for voice-mode paste).
-    func typeText(_ text: String) {
-        if !frontmostIsTerminal { return }
+    /// Insert dictation text live into the destination.
+    /// - Terminals: keystroke via System Events (terminals interpret letters as TTY input — no shortcut chaos).
+    /// - Other apps: insert directly into the focused text field via the Accessibility API
+    ///   (no key events emitted, so app shortcuts like space=pause / f=fullscreen never fire).
+    /// Returns true if the text was delivered. False = caller should accumulate in the panel buffer instead.
+    @discardableResult
+    func typeText(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
 
-        let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        guard !escaped.isEmpty else { return }
+        // In Terminal-only mode, refuse to type when frontmost isn't a terminal.
+        if terminalOnly && !frontmostIsTerminal { return false }
 
-        let script = """
-        tell application "System Events"
-            keystroke "\(escaped)"
-        end tell
-        """
-        runAppleScript(script)
+        if frontmostIsTerminal {
+            let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            let script = """
+            tell application "System Events"
+                keystroke "\(escaped)"
+            end tell
+            """
+            runAppleScript(script)
+            return true
+        }
+
+        // Non-terminal frontmost — Any App mode. Use AX text insertion.
+        return insertViaAccessibility(text)
+    }
+
+    /// Insert text at the cursor of the focused text field via the Accessibility API.
+    /// Returns false if no settable focused text element exists (Finder, video player, no focus).
+    private func insertViaAccessibility(_ text: String) -> Bool {
+        let systemWide = AXUIElementCreateSystemWide()
+
+        var focused: AnyObject?
+        let getResult = AXUIElementCopyAttributeValue(
+            systemWide,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        )
+        guard getResult == .success, let focusedRef = focused else { return false }
+        let element = focusedRef as! AXUIElement
+
+        // Only insert if kAXSelectedTextAttribute is settable — true for proper text inputs only.
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable)
+        guard settable.boolValue else { return false }
+
+        let setResult = AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFTypeRef
+        )
+        return setResult == .success
     }
 
     /// Delete N characters backward (backspace)
