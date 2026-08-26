@@ -25,9 +25,7 @@ class SpeechEngine: ObservableObject {
     func startListening() {
         requestPermissions { [weak self] granted in
             guard granted else {
-                #if DEBUG
-                print("Speech recognition permission denied")
-                #endif
+                vpLog("[Speech] permission denied")
                 return
             }
             DispatchQueue.main.async {
@@ -59,31 +57,27 @@ class SpeechEngine: ObservableObject {
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
             let granted = status == .authorized
-            #if DEBUG
-            if !granted {
-                print("Speech recognition not authorized: \(status.rawValue)")
-            }
-            #endif
+            vpLog("[Speech] authorization status: \(status.rawValue) granted=\(granted)")
             completion(granted)
         }
     }
 
     private func beginRecognition() {
-        // Cancel any existing task
+        vpLog("[Speech] beginRecognition called")
         recognitionTask?.cancel()
         recognitionTask = nil
 
         let inputNode = audioEngine.inputNode
-        // Remove any existing taps
         inputNode.removeTap(onBus: 0)
 
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let request = recognitionRequest else { return }
         request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = false  // Use server for better accuracy
+        request.requiresOnDeviceRecognition = false
         if #available(macOS 13, *) {
             request.addsPunctuation = true
         }
+        request.taskHint = .dictation
 
         recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self = self else { return }
@@ -94,19 +88,20 @@ class SpeechEngine: ObservableObject {
                     self.currentTranscript = transcript
                 }
 
-                // Reset silence timer on new speech
                 DispatchQueue.main.async {
                     self.resetSilenceTimer(transcript: transcript, isFinal: result.isFinal)
                 }
             }
 
+            if let error = error {
+                vpLog("[Speech] error: \(error.localizedDescription)")
+            }
             if error != nil || (result?.isFinal == true) {
                 self.audioEngine.stop()
                 inputNode.removeTap(onBus: 0)
                 self.recognitionRequest = nil
                 self.recognitionTask = nil
 
-                // Restart recognition for continuous listening
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     if self.isListening {
                         self.beginRecognition()
@@ -127,21 +122,18 @@ class SpeechEngine: ObservableObject {
                 self.isListening = true
                 self.currentTranscript = ""
             }
+            vpLog("[Speech] audio engine started, isListening=true")
         } catch {
-            #if DEBUG
-            print("Audio engine failed to start: \(error)")
-            #endif
+            vpLog("[Speech] audio engine FAILED: \(error)")
         }
     }
 
     private func resetSilenceTimer(transcript: String, isFinal: Bool) {
         silenceTimer?.invalidate()
 
-        // If silence timer already delivered for this recognition session, ignore isFinal
         if isFinal {
             let now = Date()
             if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
-                // Already delivered via silence timer — skip
                 return
             }
             deliverUtterance(transcript)
@@ -158,7 +150,6 @@ class SpeechEngine: ObservableObject {
     }
 
     private func deliverUtterance(_ text: String) {
-        // Dedup — block any delivery within 2.5 seconds of last one
         let now = Date()
         if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
             return
@@ -166,13 +157,12 @@ class SpeechEngine: ObservableObject {
 
         lastTranscript = text
         lastDeliveryTime = now
+        vpLog("[Speech] deliver: '\(text.prefix(80))'")
         DispatchQueue.main.async {
             self.currentTranscript = ""
         }
 
-        // Force restart recognition for next utterance
         recognitionRequest?.endAudio()
-
         onUtterance(text)
     }
 }
