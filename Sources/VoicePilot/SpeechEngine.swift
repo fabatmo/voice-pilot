@@ -2,47 +2,60 @@ import Foundation
 import Speech
 import AVFoundation
 
+/// Observable facade over a swappable recognition backend.
+///
+/// The public surface is unchanged from the original SFSpeechRecognizer-only
+/// version, so FloatingPanel, StatusBarController and App keep working as-is.
+/// Which backend runs is decided once at launch by SpeechEngineChoice.current.
 class SpeechEngine: ObservableObject {
     @Published var isListening = false
     @Published var currentTranscript = ""
 
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
-    private let audioEngine = AVAudioEngine()
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var onUtterance: (String) -> Void
+    /// Which backend this process is running. Fixed for the lifetime of the app.
+    let engineChoice: SpeechEngineChoice
 
-    // Silence detection
-    private var silenceTimer: Timer?
-    private let silenceThreshold: TimeInterval = 1.5
-    private var lastTranscript = ""
-    private var lastDeliveryTime: Date = .distantPast
+    private var backend: SpeechBackend
+    private var onUtterance: (String) -> Void
 
     init(onUtterance: @escaping (String) -> Void) {
         self.onUtterance = onUtterance
-    }
 
-    func startListening() {
-        requestPermissions { [weak self] granted in
-            guard granted else {
-                vpLog("[Speech] permission denied")
-                return
+        let choice = SpeechEngineChoice.current
+        self.engineChoice = choice
+
+        if choice == .analyzer, #available(macOS 26.0, *) {
+            self.backend = AnalyzerSpeechBackend()
+        } else {
+            if choice == .analyzer {
+                vpLog("[Speech] analyzer requested but macOS < 26, falling back to legacy")
             }
-            DispatchQueue.main.async {
-                self?.beginRecognition()
-            }
+            self.backend = LegacySpeechBackend()
+        }
+        vpLog("[Speech] engine = \(engineChoice.displayName)")
+
+        backend.onPartial = { [weak self] text in
+            DispatchQueue.main.async { self?.currentTranscript = text }
+        }
+        backend.onUtterance = { [weak self] text in
+            guard let self else { return }
+            DispatchQueue.main.async { self.currentTranscript = "" }
+            self.onUtterance(text)
+        }
+        backend.onRunningChanged = { [weak self] running in
+            DispatchQueue.main.async { self?.isListening = running }
         }
     }
 
+    func startListening() {
+        vpLog("[Speech] startListening (\(engineChoice.rawValue))")
+        backend.start()
+    }
+
     func stopListening() {
-        audioEngine.stop()
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        recognitionRequest = nil
-        recognitionTask = nil
-        silenceTimer?.invalidate()
+        backend.stop()
         DispatchQueue.main.async {
             self.isListening = false
+            self.currentTranscript = ""
         }
     }
 
@@ -52,117 +65,5 @@ class SpeechEngine: ObservableObject {
         } else {
             startListening()
         }
-    }
-
-    private func requestPermissions(completion: @escaping (Bool) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { status in
-            let granted = status == .authorized
-            vpLog("[Speech] authorization status: \(status.rawValue) granted=\(granted)")
-            completion(granted)
-        }
-    }
-
-    private func beginRecognition() {
-        vpLog("[Speech] beginRecognition called")
-        recognitionTask?.cancel()
-        recognitionTask = nil
-
-        let inputNode = audioEngine.inputNode
-        inputNode.removeTap(onBus: 0)
-
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        guard let request = recognitionRequest else { return }
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = false
-        if #available(macOS 13, *) {
-            request.addsPunctuation = true
-        }
-        request.taskHint = .dictation
-
-        recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self = self else { return }
-
-            if let result = result {
-                let transcript = result.bestTranscription.formattedString
-                DispatchQueue.main.async {
-                    self.currentTranscript = transcript
-                }
-
-                DispatchQueue.main.async {
-                    self.resetSilenceTimer(transcript: transcript, isFinal: result.isFinal)
-                }
-            }
-
-            if let error = error {
-                vpLog("[Speech] error: \(error.localizedDescription)")
-            }
-            if error != nil || (result?.isFinal == true) {
-                self.audioEngine.stop()
-                inputNode.removeTap(onBus: 0)
-                self.recognitionRequest = nil
-                self.recognitionTask = nil
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if self.isListening {
-                        self.beginRecognition()
-                    }
-                }
-            }
-        }
-
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            self.recognitionRequest?.append(buffer)
-        }
-
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            DispatchQueue.main.async {
-                self.isListening = true
-                self.currentTranscript = ""
-            }
-            vpLog("[Speech] audio engine started, isListening=true")
-        } catch {
-            vpLog("[Speech] audio engine FAILED: \(error)")
-        }
-    }
-
-    private func resetSilenceTimer(transcript: String, isFinal: Bool) {
-        silenceTimer?.invalidate()
-
-        if isFinal {
-            let now = Date()
-            if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
-                return
-            }
-            deliverUtterance(transcript)
-            return
-        }
-
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                self.deliverUtterance(text)
-            }
-        }
-    }
-
-    private func deliverUtterance(_ text: String) {
-        let now = Date()
-        if now.timeIntervalSince(lastDeliveryTime) < 2.5 {
-            return
-        }
-
-        lastTranscript = text
-        lastDeliveryTime = now
-        vpLog("[Speech] deliver: '\(text.prefix(80))'")
-        DispatchQueue.main.async {
-            self.currentTranscript = ""
-        }
-
-        recognitionRequest?.endAudio()
-        onUtterance(text)
     }
 }

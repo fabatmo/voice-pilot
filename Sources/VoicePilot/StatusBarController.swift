@@ -62,6 +62,25 @@ class StatusBarController {
 
         menu.addItem(.separator())
 
+        let engineLabel = NSMenuItem(
+            title: "Engine: \(speechEngine.engineChoice.displayName)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        engineLabel.isEnabled = false
+        menu.addItem(engineLabel)
+
+        let other: SpeechEngineChoice = speechEngine.engineChoice == .analyzer ? .legacy : .analyzer
+        let switchItem = NSMenuItem(
+            title: "Switch to \(other.displayName) and Relaunch",
+            action: #selector(switchEngine),
+            keyEquivalent: ""
+        )
+        switchItem.target = self
+        menu.addItem(switchItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit Voice Pilot", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -79,6 +98,21 @@ class StatusBarController {
 
     @objc private func quit() {
         onQuit()
+    }
+
+    /// Engines are chosen at launch, so switching relaunches the process.
+    @objc private func switchEngine() {
+        let other: SpeechEngineChoice = speechEngine.engineChoice == .analyzer ? .legacy : .analyzer
+        UserDefaults.standard.set(other.rawValue, forKey: SpeechEngineChoice.defaultsKey)
+        UserDefaults.standard.synchronize()
+        vpLog("[StatusBar] switching engine to \(other.rawValue), relaunching")
+
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     private func observeState() {
