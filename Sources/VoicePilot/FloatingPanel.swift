@@ -11,16 +11,12 @@ class NonActivatingPanel: NSPanel {
 class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     var window: NSWindow?
     private var speechEngine: SpeechEngine
-    private var confirmationManager: ConfirmationManager
-    private var promptBuilder: PromptBuilder
     private var terminalController: TerminalController
     private var dictationManager: DictationManager
     @Published var isMini = true
 
-    init(speechEngine: SpeechEngine, confirmationManager: ConfirmationManager, promptBuilder: PromptBuilder, terminalController: TerminalController, dictationManager: DictationManager) {
+    init(speechEngine: SpeechEngine, terminalController: TerminalController, dictationManager: DictationManager) {
         self.speechEngine = speechEngine
-        self.confirmationManager = confirmationManager
-        self.promptBuilder = promptBuilder
         self.terminalController = terminalController
         self.dictationManager = dictationManager
         super.init()
@@ -30,8 +26,6 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     func showWindow() {
         let view = MainView(
             speechEngine: speechEngine,
-            confirmationManager: confirmationManager,
-            promptBuilder: promptBuilder,
             terminalController: terminalController,
             dictationManager: dictationManager,
             panelController: self
@@ -96,8 +90,6 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
 struct MainView: View {
     @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var confirmationManager: ConfirmationManager
-    @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var terminalController: TerminalController
     @ObservedObject var dictationManager: DictationManager
     @ObservedObject var panelController: FloatingPanelController
@@ -109,29 +101,13 @@ struct MainView: View {
             if panelController.isMini {
                 MiniContent(
                     speechEngine: speechEngine,
-                    confirmationManager: confirmationManager,
-                    dictationManager: dictationManager
-                )
-            } else if dictationManager.isActive {
-                DictationContent(
-                    speechEngine: speechEngine,
-                    dictationManager: dictationManager,
-                    promptBuilder: promptBuilder,
-                    terminalController: terminalController
-                )
-            } else if promptBuilder.isActive {
-                BuilderContent(
-                    speechEngine: speechEngine,
-                    promptBuilder: promptBuilder,
                     dictationManager: dictationManager
                 )
             } else {
-                FullContent(
+                DictationContent(
                     speechEngine: speechEngine,
-                    confirmationManager: confirmationManager,
-                    promptBuilder: promptBuilder,
-                    terminalController: terminalController,
-                    dictationManager: dictationManager
+                    dictationManager: dictationManager,
+                    terminalController: terminalController
                 )
             }
         }
@@ -144,7 +120,6 @@ struct MainView: View {
 
 struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var confirmationManager: ConfirmationManager
     @ObservedObject var dictationManager: DictationManager
 
     var body: some View {
@@ -153,38 +128,18 @@ struct MiniContent: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(dictationManager.isActive ? Color.orange : (speechEngine.isListening ? Color.green : Color.red))
+                    .fill(speechEngine.isListening ? Color.green : Color.red)
                     .frame(width: 7, height: 7)
 
-                if dictationManager.isActive {
-                    if !speechEngine.currentTranscript.isEmpty {
-                        Text(speechEngine.currentTranscript)
-                            .font(.system(size: 12))
-                            .foregroundColor(.white)
-                            .lineLimit(2)
-                    } else {
-                        Text("Dictating...")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.white.opacity(0.5))
-                    }
-                } else if !speechEngine.currentTranscript.isEmpty {
+                if !speechEngine.currentTranscript.isEmpty {
                     Text(speechEngine.currentTranscript)
                         .font(.system(size: 12))
                         .foregroundColor(.white)
                         .lineLimit(2)
-                } else if confirmationManager.isShowingConfirmation {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.green)
-                        Text("Sent")
-                            .font(.system(size: 11))
-                            .foregroundColor(.green)
-                    }
                 } else {
-                    Text(speechEngine.isListening ? "Listening..." : "Paused")
+                    Text(speechEngine.isListening ? "Dictating..." : "Paused")
                         .font(.system(size: 12))
-                        .foregroundColor(Color.white.opacity(0.3))
+                        .foregroundColor(Color.white.opacity(0.5))
                 }
 
                 Spacer()
@@ -201,144 +156,11 @@ struct MiniContent: View {
     }
 }
 
-// MARK: - Full Content
-
-struct FullContent: View {
-    @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var confirmationManager: ConfirmationManager
-    @ObservedObject var promptBuilder: PromptBuilder
-    @ObservedObject var terminalController: TerminalController
-    @ObservedObject var dictationManager: DictationManager
-
-    private var modeIndex: Int {
-        if dictationManager.isActive { return 2 }
-        if promptBuilder.isActive { return 1 }
-        return 0
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                Spacer().frame(height: 22)
-
-                // Transcript
-                if !speechEngine.currentTranscript.isEmpty {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 12))
-                            .foregroundColor(.blue)
-                        Text(speechEngine.currentTranscript)
-                            .font(.system(size: 13))
-                            .foregroundColor(.white)
-                            .lineLimit(5)
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.white.opacity(0.2))
-                        Text("Speak a command or prompt...")
-                            .font(.system(size: 13))
-                            .foregroundColor(Color.white.opacity(0.2))
-                    }
-                }
-
-                if confirmationManager.isShowingConfirmation {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.green)
-                        Text(confirmationManager.refinedText)
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.white.opacity(0.6))
-                            .lineLimit(3)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            BottomToolbar(
-                speechEngine: speechEngine,
-                promptBuilder: promptBuilder,
-                dictationManager: dictationManager,
-                terminalController: terminalController
-            )
-        }
-    }
-}
-
-// MARK: - Builder Content
-
-struct BuilderContent: View {
-    @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var promptBuilder: PromptBuilder
-    @ObservedObject var dictationManager: DictationManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                Spacer().frame(height: 22)
-
-                if !speechEngine.currentTranscript.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 10))
-                            .foregroundColor(.blue)
-                        Text(speechEngine.currentTranscript)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.white.opacity(0.5))
-                            .lineLimit(2)
-                    }
-                }
-
-                if promptBuilder.isRefining {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(.white)
-                        Text("Refining...")
-                            .font(.system(size: 12))
-                            .foregroundColor(Color.white.opacity(0.4))
-                    }
-                } else if !promptBuilder.currentDraft.isEmpty {
-                    ScrollView {
-                        Text(promptBuilder.currentDraft)
-                            .font(.system(size: 13))
-                            .foregroundColor(.white)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Describe your prompt...")
-                            .font(.system(size: 13))
-                            .foregroundColor(Color.white.opacity(0.25))
-                        Text("Speak freely. Refine as you go.")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.white.opacity(0.15))
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            BottomToolbar(
-                speechEngine: speechEngine,
-                promptBuilder: promptBuilder,
-                dictationManager: dictationManager,
-                terminalController: nil
-            )
-        }
-    }
-}
-
 // MARK: - Dictation Content
 
 struct DictationContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var dictationManager: DictationManager
-    @ObservedObject var promptBuilder: PromptBuilder
     @ObservedObject var terminalController: TerminalController
 
     var body: some View {
@@ -346,7 +168,6 @@ struct DictationContent: View {
             VStack(alignment: .leading, spacing: 10) {
                 Spacer().frame(height: 22)
 
-                // Live transcript — typing into terminal in real-time
                 if !speechEngine.currentTranscript.isEmpty {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "waveform")
@@ -362,7 +183,7 @@ struct DictationContent: View {
                         Image(systemName: "waveform")
                             .font(.system(size: 12))
                             .foregroundColor(Color.white.opacity(0.2))
-                        Text("Speak — text types live into terminal")
+                        Text("Speak — text types live")
                             .font(.system(size: 13))
                             .foregroundColor(Color.white.opacity(0.2))
                     }
@@ -381,15 +202,14 @@ struct DictationContent: View {
 
             BottomToolbar(
                 speechEngine: speechEngine,
-                promptBuilder: promptBuilder,
-                dictationManager: dictationManager,
-                terminalController: terminalController
+                terminalController: terminalController,
+                dictationManager: dictationManager
             )
         }
     }
 }
 
-// MARK: - Toolbar button — all buttons in the bar use this exact style
+// MARK: - Toolbar button
 
 private let tbButtonWidth: CGFloat = 54
 
@@ -402,51 +222,30 @@ struct TBButton: View {
         Button(title, action: action)
             .buttonStyle(.bordered)
             .controlSize(.mini)
-            .tint(active ? .accentColor : nil)
+            .tint(active ? .green : nil)
             .frame(width: tbButtonWidth)
+            .opacity(active ? 1.0 : 0.6)
     }
 }
 
-// MARK: - Bottom toolbar — 5 identical buttons, equal spread
+// MARK: - Bottom toolbar
 
 struct BottomToolbar: View {
     @ObservedObject var speechEngine: SpeechEngine
-    @ObservedObject var promptBuilder: PromptBuilder
+    @ObservedObject var terminalController: TerminalController
     @ObservedObject var dictationManager: DictationManager
-    /// nil = don't render the target button (e.g. Builder mode).
-    var terminalController: TerminalController?
-
-    private func selectMode(_ idx: Int) {
-        promptBuilder.stop()
-        dictationManager.stop()
-        switch idx {
-        case 1: promptBuilder.start()
-        case 2: dictationManager.start()
-        default: break
-        }
-    }
-
-    private var activeModeIndex: Int {
-        if dictationManager.isActive { return 2 }
-        if promptBuilder.isActive { return 1 }
-        return 0
-    }
 
     var body: some View {
         HStack(spacing: 0) {
-            TBButton(title: "Voice", active: activeModeIndex == 0) { selectMode(0) }
-            Spacer(minLength: 4)
-            TBButton(title: "Builder", active: activeModeIndex == 1) { selectMode(1) }
-            Spacer(minLength: 4)
-            TBButton(title: "Dictation", active: activeModeIndex == 2) { selectMode(2) }
+            TBButton(title: "Dictation", active: dictationManager.isActive) {
+                if !dictationManager.isActive { dictationManager.start() }
+            }
             Spacer(minLength: 4)
             TBButton(title: speechEngine.isListening ? "Mute" : "Unmute", active: false) {
                 speechEngine.toggleListening()
             }
-            if let terminalController {
-                Spacer(minLength: 4)
-                TargetButtonInline(terminalController: terminalController)
-            }
+            Spacer(minLength: 4)
+            TargetButtonInline(terminalController: terminalController)
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)

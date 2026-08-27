@@ -4,7 +4,6 @@ import Combine
 import os
 
 func vpLog(_ msg: String) {
-    #if DEBUG
     let line = "\(Date()): \(msg)\n"
     if let data = line.data(using: .utf8) {
         let path = "/tmp/voicepilot_debug.log"
@@ -14,7 +13,6 @@ func vpLog(_ msg: String) {
             FileManager.default.createFile(atPath: path, contents: data)
         }
     }
-    #endif
 }
 
 class DictationManager: ObservableObject {
