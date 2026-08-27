@@ -10,10 +10,16 @@ This file contains **only** project-specific identity and pointers. Global rules
 
 - **Repo:** `/Users/fabianklainman/claude-apps/voice-pilot`
 - **GitHub:** fabatmo/voice-pilot
-- **Stack:** Swift / macOS 14+ (Sonoma or newer)
-- **Virtualenv / deps:** `swift build -c release`
-- **Run:** `.build/release/VoicePilot &`
-- **Test:** `swift test (if tests exist)`
+- **Stack:** Swift / macOS 26+ (Tahoe or newer)
+- **Build + install:** `./build-install.sh` — builds, assembles and signs `/Applications/VoicePilot.app`
+- **Run:** `open /Applications/VoicePilot.app` (menu bar accessory, `LSUIElement`)
+- **Test:** `swift test` (no test target at present)
+
+**Signing is not optional.** `build-install.sh` signs with the stable
+`VoicePilot Dev` cert (`D4A1F9BB5292176F9D4537F16426491AF9888B83`). Never
+ad-hoc sign — it rotates the CDHash and macOS revokes every TCC grant.
+`security find-identity -v -p codesigning` reporting `0 valid identities` is
+normal here (self-signed, untrusted) and does not block `codesign`.
 
 ---
 
@@ -29,9 +35,37 @@ Loaded alongside this file when relevant:
 
 ## Project-specific context
 
-Native macOS menu bar app for hands-free voice control of Claude Code CLI. Continuous listening (no wake word). Voice commands: enter, yes, no, cancel, scroll up/down. Voice prompts: naturally spoken, filler words cleaned, auto-submitted to terminal. Floating panel shows live transcript in bottom-right corner. Zero-latency local speech recognition (no API calls).
+Native macOS menu bar app for hands-free dictation into the terminal and any
+other app. Continuous listening, no wake word. Speech is typed into the
+frontmost app via the Accessibility API, with clipboard paste as fallback;
+middle-click submits. Floating panel shows the live transcript.
 
-**Requirements:** macOS 14+ Sonoma or newer, Xcode Command Line Tools (`xcode-select --install`).
+**Dictation only.** The former Voice Control and Prompt Builder modes, and the
+three-way mode toggle, were removed in 2026-08. There are no spoken commands
+(enter / yes / no / cancel / scroll) any more.
+
+**Speech recognition** runs fully on-device — no audio leaves the machine.
+Two selectable engines, switched from the menu bar (switching relaunches):
+
+- **Analyzer** (default) — `SpeechAnalyzer` + `SpeechTranscriber`, macOS 26.
+  No request-duration cap, endpointing from the model rather than a silence
+  timer. Downloads its locale model on first run (~2s).
+- **Legacy** — `SFSpeechRecognizer`, kept as a fallback. Subject to the ~60s
+  per-request cap; the app restarts the recognizer without dropping audio.
+
+Chosen at launch from `VOICEPILOT_ENGINE` (`analyzer`|`legacy`) or the
+`VoicePilotSpeechEngine` user default.
+
+**Requirements:** macOS 26 Tahoe or newer (`SpeechAnalyzer` is 26.0+), Xcode
+Command Line Tools (`xcode-select --install`). Needs Microphone, Speech
+Recognition, Accessibility and Automation permissions; macOS reads these once
+at launch, so the app must be relaunched after any permission change.
+
+**Debugging:** the app logs to `/tmp/voicepilot_debug.log` (path is per-bundle,
+so side-by-side builds do not interleave). `./compare-engines.sh` extracts just
+the delivered utterances. `./build-next.sh` builds a separate
+`VoicePilot-Next.app` under its own bundle id for side-by-side evaluation —
+never leave two builds listening at once, they will both type.
 
 ---
 
