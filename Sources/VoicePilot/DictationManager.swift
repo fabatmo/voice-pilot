@@ -3,10 +3,18 @@ import AppKit
 import Combine
 import os
 
+/// Per-bundle log path, so two builds running side by side do not interleave
+/// into one file and can be diffed against each other.
+let vpLogPath: String = {
+    let id = Bundle.main.bundleIdentifier ?? "unknown"
+    let suffix = id.hasSuffix("Next") ? "_next" : ""
+    return "/tmp/voicepilot\(suffix)_debug.log"
+}()
+
 func vpLog(_ msg: String) {
     let line = "\(Date()): \(msg)\n"
     if let data = line.data(using: .utf8) {
-        let path = "/tmp/voicepilot_debug.log"
+        let path = vpLogPath
         if let fh = FileHandle(forWritingAtPath: path) {
             fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
         } else {

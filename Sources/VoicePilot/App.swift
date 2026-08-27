@@ -51,7 +51,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        speechEngine?.startListening()
+        // Defaults to true, preserving single-app behaviour. The side-by-side
+        // evaluation bundle seeds it false so two builds never type at once.
+        let autoStart = UserDefaults.standard.object(forKey: "autoStartListening") as? Bool ?? true
+        if autoStart {
+            speechEngine?.startListening()
+        } else {
+            vpLog("[App] autoStartListening=false — start it from the menu bar")
+        }
         terminalController?.saveClipboard()
         dictationManager?.start()
     }
