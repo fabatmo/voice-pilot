@@ -13,15 +13,17 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>
-    <string>1.1.0</string>
+    <string>1.2.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
+    <string>1.2.0</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Voice Pilot needs to send keystrokes to your terminal.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Voice Pilot needs microphone access for continuous voice recognition.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Voice Pilot uses speech recognition to convert your voice into Claude Code prompts.</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
     <key>LSUIElement</key>
     <true/>
 </dict>
