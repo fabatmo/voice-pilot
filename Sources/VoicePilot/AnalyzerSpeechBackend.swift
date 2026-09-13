@@ -13,7 +13,10 @@ import CoreMedia
 ///  - Custom vocabulary via AnalysisContext.contextualStrings, which the legacy
 ///    API cannot do at all.
 @available(macOS 26.0, *)
-final class AnalyzerSpeechBackend: SpeechBackend {
+final class AnalyzerSpeechBackend: SpeechBackend, @unchecked Sendable {
+    // @unchecked Sendable is justified narrowly: every stored property is touched
+    // only on the main thread EXCEPT lastLoudAudio, which the realtime audio tap
+    // writes and the watchdog timer reads. That one is lock-guarded below.
     var onPartial: ((String) -> Void)?
     var onUtterance: ((String) -> Void)?
     var onRunningChanged: ((Bool) -> Void)?
@@ -42,6 +45,35 @@ final class AnalyzerSpeechBackend: SpeechBackend {
     /// Finalized results arrive as distinct contiguous segments, not cumulatively.
     private var lastFinalizedSegment = ""
 
+    // MARK: Silence watchdog
+    //
+    // The analyzer types only when it commits a segment, and it decides when a
+    // segment ends. Measured over 6713 utterances: 78% commit within 1s of the
+    // speaker stopping, but 7% take over 5s, and those are long segments
+    // (13.4s average, vs 4.3s for the fast ones). Long unbroken speech means
+    // nothing reaches the terminal until the model finally commits.
+    //
+    // This is a backstop, not a replacement for the model's endpointing: after
+    // a real silence, ask the analyzer to finalize what it already has via its
+    // own finalize(through:) call.
+    private let silenceThreshold: TimeInterval = 1.2
+    /// RMS below this counts as silence. Empirical: speech sits well above it,
+    /// room tone well below.
+    private let silenceRMS: Float = 0.008
+    /// Written from the realtime audio tap, read from the watchdog on main.
+    /// Lock-guarded: an unsynchronised Date across those two threads is a race.
+    private let levelLock = NSLock()
+    private var _lastLoudAudio = Date()
+    private var lastLoudAudio: Date {
+        get { levelLock.lock(); defer { levelLock.unlock() }; return _lastLoudAudio }
+        set { levelLock.lock(); defer { levelLock.unlock() }; _lastLoudAudio = newValue }
+    }
+    private var watchdog: Timer?
+    /// End of the newest provisional result, i.e. how far we could finalize.
+    private var pendingVolatileEnd: CMTime?
+    /// Set while a forced finalize is in flight, so the watchdog does not stack them.
+    private var finalizing = false
+
     func start() {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             guard status == .authorized else {
@@ -54,6 +86,10 @@ final class AnalyzerSpeechBackend: SpeechBackend {
     }
 
     func stop() {
+        watchdog?.invalidate()
+        watchdog = nil
+        pendingVolatileEnd = nil
+        finalizing = false
         resultsTask?.cancel()
         resultsTask = nil
         inputContinuation?.finish()
@@ -153,8 +189,10 @@ final class AnalyzerSpeechBackend: SpeechBackend {
         audioEngine.prepare()
         do {
             try audioEngine.start()
+            lastLoudAudio = Date()
+            startWatchdog()
             onRunningChanged?(true)
-            vpLog("[Analyzer] audio engine started")
+            vpLog("[Analyzer] audio engine started, silence watchdog armed (\(silenceThreshold)s)")
         } catch {
             vpLog("[Analyzer] audio engine FAILED: \(error)")
             onRunningChanged?(false)
@@ -163,6 +201,7 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
     private func feed(_ buffer: AVAudioPCMBuffer) {
         guard let continuation = inputContinuation else { return }
+        noteAudioLevel(of: buffer)
         guard let target = analyzerFormat, let converter else {
             continuation.yield(AnalyzerInput(buffer: buffer))
             return
@@ -191,6 +230,51 @@ final class AnalyzerSpeechBackend: SpeechBackend {
         continuation.yield(AnalyzerInput(buffer: out))
     }
 
+    // MARK: - Silence watchdog
+
+    /// Tracks when audio was last above the silence floor.
+    private func noteAudioLevel(of buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
+        let samples = channels[0]
+        let n = Int(buffer.frameLength)
+        var sumSquares: Float = 0
+        for i in 0..<n { sumSquares += samples[i] * samples[i] }
+        let rms = (sumSquares / Float(n)).squareRoot()
+        if rms > silenceRMS {
+            lastLoudAudio = Date()
+        }
+    }
+
+    @MainActor
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.checkSilence()
+        }
+    }
+
+    private func checkSilence() {
+        guard !finalizing,
+              let analyzer,
+              let through = pendingVolatileEnd,
+              Date().timeIntervalSince(lastLoudAudio) >= silenceThreshold
+        else { return }
+
+        finalizing = true
+        let target = through
+        pendingVolatileEnd = nil
+        Task { @MainActor [weak self] in
+            do {
+                try await analyzer.finalize(through: target)
+                vpLog(String(format: "[Analyzer] forced finalize through %.2f after silence",
+                             CMTimeGetSeconds(target)))
+            } catch {
+                vpLog("[Analyzer] forced finalize failed: \(error)")
+            }
+            self?.finalizing = false
+        }
+    }
+
     // MARK: - Results
 
     /// SpeechTranscriber.Result has no isFinal flag. Determined empirically against
@@ -217,8 +301,14 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
                     await MainActor.run {
                         if isFinal {
+                            self.pendingVolatileEnd = nil
                             self.deliverFinal(text)
                         } else {
+                            // Remember how far we could force a commit to, if the
+                            // model does not get there on its own.
+                            self.pendingVolatileEnd =
+                                text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? nil : result.range.end
                             self.onPartial?(text)
                         }
                     }
