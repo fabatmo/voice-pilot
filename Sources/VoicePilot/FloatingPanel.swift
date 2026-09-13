@@ -8,6 +8,31 @@ class NonActivatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Reports pointer enter/exit for the panel regardless of key or active state.
+///
+/// `.activeAlways` is load-bearing. This panel is never main (`canBecomeMain` is
+/// false) and only becomes key when it needs to, so a tracking area scoped to the
+/// key or active window would never fire — and SwiftUI's `.onHover` installs one
+/// of those. Hence an explicit tracking area rather than the SwiftUI modifier.
+final class HoverReportingView: NSView {
+    var onHoverChange: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        // With .inVisibleRect the rect argument is ignored and kept in sync for us.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
+    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
+}
+
 class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     var window: NSWindow?
     private var speechEngine: SpeechEngine
@@ -32,8 +57,20 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         )
         .preferredColorScheme(.dark)
 
-        let hostingView = NSHostingView(rootView: view)
         let miniSize = NSRect(x: 0, y: 0, width: 310, height: 90)
+
+        // Hover container wraps the SwiftUI host so enter/exit covers the whole panel,
+        // including the area under the transparent titlebar (.fullSizeContentView).
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = miniSize
+        hostingView.autoresizingMask = [.width, .height]
+
+        let hoverView = HoverReportingView(frame: miniSize)
+        hoverView.autoresizingMask = [.width, .height]
+        hoverView.addSubview(hostingView)
+        hoverView.onHoverChange = { [weak self] inside in
+            self?.setHover(inside)
+        }
 
         let panel = NonActivatingPanel(
             contentRect: miniSize,
@@ -44,7 +81,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         panel.title = "Voice Pilot"
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
-        panel.contentView = hostingView
+        panel.contentView = hoverView
         panel.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
         panel.isOpaque = true
         panel.hasShadow = true
@@ -65,6 +102,37 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
         panel.orderFront(nil)
         self.window = panel
+    }
+
+    // MARK: - Hover parking
+
+    /// Dwell required before parking. The panel sits at .floating level pinned to the
+    /// top-right corner, so the pointer crosses it on the way elsewhere; without a
+    /// dwell every incidental pass would park dictation. Un-parking is immediate.
+    private static let hoverDwell: TimeInterval = 0.2
+    private var hoverParkTimer: Timer?
+
+    private func setHover(_ inside: Bool) {
+        hoverParkTimer?.invalidate()
+        hoverParkTimer = nil
+
+        guard inside else {
+            if terminalController.parked {
+                terminalController.parked = false
+                vpLog("[TC] park OFF — pointer left panel")
+            }
+            return
+        }
+
+        // Scheduled in .common modes: during mouse tracking the main run loop sits in
+        // event-tracking mode, where a .default-mode timer would not fire.
+        let timer = Timer(timeInterval: Self.hoverDwell, repeats: false) { [weak self] _ in
+            guard let self, !self.terminalController.parked else { return }
+            self.terminalController.parked = true
+            vpLog("[TC] park ON — pointer dwelling on panel")
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hoverParkTimer = timer
     }
 
     // Green button (zoom) toggles mini/full
@@ -101,7 +169,8 @@ struct MainView: View {
             if panelController.isMini {
                 MiniContent(
                     speechEngine: speechEngine,
-                    dictationManager: dictationManager
+                    dictationManager: dictationManager,
+                    terminalController: terminalController
                 )
             } else {
                 DictationContent(
@@ -121,6 +190,14 @@ struct MainView: View {
 struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var dictationManager: DictationManager
+    @ObservedObject var terminalController: TerminalController
+
+    /// Amber while parked, so the state is never invisible — the pointer resting here
+    /// silently stopping delivery would otherwise look like a broken app.
+    private var statusColor: Color {
+        if terminalController.parked { return .orange }
+        return speechEngine.isListening ? .green : .red
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -128,7 +205,7 @@ struct MiniContent: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(speechEngine.isListening ? Color.green : Color.red)
+                    .fill(statusColor)
                     .frame(width: 7, height: 7)
 
                 if !speechEngine.currentTranscript.isEmpty {
@@ -136,6 +213,10 @@ struct MiniContent: View {
                         .font(.system(size: 12))
                         .foregroundColor(.white)
                         .lineLimit(2)
+                } else if terminalController.parked {
+                    Text("Parked — buffering, not typing")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
                 } else {
                     Text(speechEngine.isListening ? "Dictating..." : "Paused")
                         .font(.system(size: 12))

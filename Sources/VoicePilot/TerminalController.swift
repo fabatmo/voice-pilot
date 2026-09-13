@@ -5,6 +5,15 @@ import ApplicationServices
 class TerminalController: ObservableObject {
     @Published var terminalOnly = false
 
+    /// Parked = deliver nothing, but keep recognising. Set while the pointer rests
+    /// on the floating panel (see FloatingPanelController.setHover).
+    ///
+    /// This is deliberately NOT mute: mute calls SpeechEngine.stopListening, which
+    /// tears down the audio engine and discards the in-flight segment. Parking only
+    /// makes typeText return false, and the caller (AppDelegate.handleUtterance)
+    /// already routes an undelivered utterance into the panel buffer instead.
+    @Published var parked = false
+
     private let terminalApps: Set<String> = [
         "Terminal", "iTerm2", "kitty", "Alacritty",
         "WezTerm", "Ghostty", "Warp", "Hyper", "Rio"
@@ -226,6 +235,13 @@ class TerminalController: ObservableObject {
 
         let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         vpLog("[TC] typeText called, terminalOnly=\(terminalOnly) frontmost=\(frontApp) isTerminal=\(frontmostIsTerminal)")
+
+        // Pointer is resting on the panel. Returning false is the whole mechanism:
+        // handleUtterance appends to the panel buffer instead, so nothing is lost.
+        if parked {
+            vpLog("[TC] PARKED: mouse over panel, buffering '\(text.prefix(40))'")
+            return false
+        }
 
         // In Terminal-only mode, refuse to type when frontmost isn't a terminal.
         if terminalOnly && !frontmostIsTerminal {

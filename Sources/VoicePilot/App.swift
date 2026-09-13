@@ -82,6 +82,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func submitDictation() {
+        // While parked, the panel buffer holds text that was never typed. Submitting
+        // would clear() it below and lose it — the exact truncation parking exists to
+        // avoid — and would submit a prompt missing everything spoken while parked.
+        if terminalController?.parked == true {
+            vpLog("[App] submitDictation ignored — parked")
+            return
+        }
+
         guard terminalController?.isTerminalFrontmost == true else { return }
 
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
