@@ -5,12 +5,19 @@ import Combine
 class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
+    private var parkZone: ParkZoneController
     private var onQuit: () -> Void
     private var onShowWindow: () -> Void
     private var cancellables = Set<AnyCancellable>()
 
-    init(speechEngine: SpeechEngine, onQuit: @escaping () -> Void, onShowWindow: @escaping () -> Void) {
+    init(
+        speechEngine: SpeechEngine,
+        parkZone: ParkZoneController,
+        onQuit: @escaping () -> Void,
+        onShowWindow: @escaping () -> Void
+    ) {
         self.speechEngine = speechEngine
+        self.parkZone = parkZone
         self.onQuit = onQuit
         self.onShowWindow = onShowWindow
 
@@ -62,6 +69,26 @@ class StatusBarController {
 
         menu.addItem(.separator())
 
+        let zoneItem = NSMenuItem(
+            title: parkZone.isVisible ? "Hide Park Zone" : "Show Park Zone",
+            action: #selector(toggleParkZone),
+            keyEquivalent: "p"
+        )
+        zoneItem.keyEquivalentModifierMask = [.command, .shift]
+        zoneItem.target = self
+        menu.addItem(zoneItem)
+
+        let panelHoverItem = NSMenuItem(
+            title: "Park on Panel Hover",
+            action: #selector(togglePanelHover),
+            keyEquivalent: ""
+        )
+        panelHoverItem.state = FloatingPanelController.panelHoverEnabled ? .on : .off
+        panelHoverItem.target = self
+        menu.addItem(panelHoverItem)
+
+        menu.addItem(.separator())
+
         let engineLabel = NSMenuItem(
             title: "Engine: \(speechEngine.engineChoice.displayName)",
             action: nil,
@@ -98,6 +125,18 @@ class StatusBarController {
 
     @objc private func quit() {
         onQuit()
+    }
+
+    @objc private func toggleParkZone() {
+        parkZone.toggle()
+    }
+
+    /// Takes effect on the next hover — the panel reads the setting each time rather
+    /// than caching it, so there is nothing to relaunch for.
+    @objc private func togglePanelHover() {
+        let next = !FloatingPanelController.panelHoverEnabled
+        UserDefaults.standard.set(next, forKey: FloatingPanelController.panelHoverKey)
+        vpLog("[StatusBar] park on panel hover = \(next)")
     }
 
     /// Engines are chosen at launch, so switching relaunches the process.

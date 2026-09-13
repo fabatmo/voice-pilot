@@ -5,14 +5,32 @@ import ApplicationServices
 class TerminalController: ObservableObject {
     @Published var terminalOnly = false
 
-    /// Parked = deliver nothing, but keep recognising. Set while the pointer rests
-    /// on the floating panel (see FloatingPanelController.setHover).
+    /// Parked = deliver nothing, but keep recognising.
     ///
     /// This is deliberately NOT mute: mute calls SpeechEngine.stopListening, which
     /// tears down the audio engine and discards the in-flight segment. Parking only
     /// makes typeText return false, and the caller (AppDelegate.handleUtterance)
     /// already routes an undelivered utterance into the panel buffer instead.
-    @Published var parked = false
+    ///
+    /// Derived, never set directly — it is the OR of every hover source. Two sources
+    /// can overlap (pointer crossing from the transcript panel into the park zone),
+    /// and letting either one write `parked` would un-park while the other is still
+    /// held, dropping speech the user believes is safely buffered.
+    @Published private(set) var parked = false
+
+    enum ParkSource: String { case panel, zone }
+
+    private var parkSources: Set<ParkSource> = []
+
+    func setParked(_ on: Bool, source: ParkSource) {
+        if on { parkSources.insert(source) } else { parkSources.remove(source) }
+
+        let next = !parkSources.isEmpty
+        guard next != parked else { return }
+        parked = next
+        let held = parkSources.map(\.rawValue).sorted().joined(separator: "+")
+        vpLog("[TC] park \(next ? "ON" : "OFF") — held by [\(held)]")
+    }
 
     private let terminalApps: Set<String> = [
         "Terminal", "iTerm2", "kitty", "Alacritty",

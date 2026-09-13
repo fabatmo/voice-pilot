@@ -8,30 +8,8 @@ class NonActivatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Reports pointer enter/exit for the panel regardless of key or active state.
-///
-/// `.activeAlways` is load-bearing. This panel is never main (`canBecomeMain` is
-/// false) and only becomes key when it needs to, so a tracking area scoped to the
-/// key or active window would never fire — and SwiftUI's `.onHover` installs one
-/// of those. Hence an explicit tracking area rather than the SwiftUI modifier.
-final class HoverReportingView: NSView {
-    var onHoverChange: ((Bool) -> Void)?
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
-        // With .inVisibleRect the rect argument is ignored and kept in sync for us.
-        addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
-    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
-}
+// HoverReportingView and HoverParkDebouncer live in HoverPark.swift — shared with
+// the standalone park zone.
 
 class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
     var window: NSWindow?
@@ -106,33 +84,28 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
     // MARK: - Hover parking
 
-    /// Dwell required before parking. The panel sits at .floating level pinned to the
-    /// top-right corner, so the pointer crosses it on the way elsewhere; without a
-    /// dwell every incidental pass would park dictation. Un-parking is immediate.
-    private static let hoverDwell: TimeInterval = 0.2
-    private var hoverParkTimer: Timer?
+    /// Whether resting on the transcript panel parks. Off-switchable because the panel
+    /// sits where the pointer naturally comes to rest, so it parks by accident; the
+    /// standalone park zone is the deliberate target. Defaults on, so enabling the zone
+    /// never silently removes behaviour that already worked.
+    static let panelHoverKey = "parkOnPanelHover"
+
+    static var panelHoverEnabled: Bool {
+        UserDefaults.standard.object(forKey: panelHoverKey) as? Bool ?? true
+    }
+
+    private lazy var parkDebouncer = HoverParkDebouncer { [weak self] parked in
+        self?.terminalController.setParked(parked, source: .panel)
+    }
 
     private func setHover(_ inside: Bool) {
-        hoverParkTimer?.invalidate()
-        hoverParkTimer = nil
-
-        guard inside else {
-            if terminalController.parked {
-                terminalController.parked = false
-                vpLog("[TC] park OFF — pointer left panel")
-            }
+        guard Self.panelHoverEnabled else {
+            // Release any hold that predates the setting being turned off.
+            parkDebouncer.cancel()
+            terminalController.setParked(false, source: .panel)
             return
         }
-
-        // Scheduled in .common modes: during mouse tracking the main run loop sits in
-        // event-tracking mode, where a .default-mode timer would not fire.
-        let timer = Timer(timeInterval: Self.hoverDwell, repeats: false) { [weak self] _ in
-            guard let self, !self.terminalController.parked else { return }
-            self.terminalController.parked = true
-            vpLog("[TC] park ON — pointer dwelling on panel")
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        hoverParkTimer = timer
+        parkDebouncer.hoverChanged(inside)
     }
 
     // Green button (zoom) toggles mini/full

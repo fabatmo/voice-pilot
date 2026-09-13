@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var terminalController: TerminalController?
     var floatingPanel: FloatingPanelController?
     var dictationManager: DictationManager?
+    var parkZone: ParkZoneController?
 
     private var dictationCurrentText = ""
     private var dictationSuppressUntil: Date = .distantPast
@@ -43,8 +44,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dictationManager: dictationManager!
         )
 
+        parkZone = ParkZoneController(terminalController: terminalController!)
+
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
+            parkZone: parkZone!,
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
                 self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)
