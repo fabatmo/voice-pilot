@@ -45,6 +45,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         parkZone = ParkZoneController(terminalController: terminalController!)
+        parkZone?.onSend = { [weak self] in
+            self?.submitDictation()
+        }
 
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
@@ -94,7 +97,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard terminalController?.isTerminalFrontmost == true else { return }
+        // Enter only means "submit" in a terminal. Logged rather than silent because
+        // the Send button makes this reachable by a deliberate click, and a button that
+        // does nothing with no trace is indistinguishable from a broken one.
+        guard terminalController?.isTerminalFrontmost == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] submitDictation ignored — frontmost is \(front), not a terminal")
+            return
+        }
+
+        // Text buffered while parked was never typed. Clearing it below would discard
+        // it, so say so — flushing it on send needs the buffer scoped to the park
+        // session, otherwise a long-stale backlog would be dumped into the prompt.
+        if let buffered = dictationManager?.accumulatedText, !buffered.isEmpty {
+            vpLog("[App] submitDictation discarding \(buffered.count) buffered chars")
+        }
 
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
         dictationCurrentText = ""
