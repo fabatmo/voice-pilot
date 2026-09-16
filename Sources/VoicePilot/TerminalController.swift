@@ -194,6 +194,28 @@ class TerminalController: ObservableObject {
         runAppleScript(script)
     }
 
+    /// Wipes whatever is sitting on the terminal's current input line.
+    ///
+    /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,
+    /// which only kills from the cursor back to the start, so anything to the right of
+    /// the cursor would survive. Moving to end-of-line first makes it clear the whole
+    /// line there, and zsh's kill-whole-line is indifferent to the extra move.
+    func clearLine() {
+        if !frontmostIsTerminal {
+            vpLog("[TC] clearLine ignored — frontmost is not a terminal")
+            return
+        }
+
+        let script = """
+        tell application "System Events"
+            key code 14 using {control down}
+            key code 32 using {control down}
+        end tell
+        """
+        runAppleScript(script)
+        vpLog("[TC] clearLine sent (ctrl-E then ctrl-U)")
+    }
+
     private var savedClipboard: String?
 
     /// Save clipboard before dictation starts

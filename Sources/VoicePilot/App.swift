@@ -48,6 +48,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         parkZone?.onSend = { [weak self] in
             self?.submitDictation()
         }
+        parkZone?.onClear = { [weak self] in
+            self?.clearDictation()
+        }
 
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
@@ -86,6 +89,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             dictationManager?.appendUtterance(text)
         }
+    }
+
+    /// Wipes the terminal's input line and the app's view of it — for when dictation
+    /// has put gibberish at the prompt.
+    private func clearDictation() {
+        // Same reasoning as submit: while parked nothing was typed, so there is no
+        // gibberish on the line to remove, and dictationManager.clear() below would
+        // destroy the buffer parking exists to protect.
+        if terminalController?.parked == true {
+            vpLog("[App] clear ignored — parked")
+            return
+        }
+
+        guard terminalController?.isTerminalFrontmost == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] clear ignored — frontmost is \(front), not a terminal")
+            return
+        }
+
+        terminalController?.clearLine()
+
+        // Reset our own view of the line as well. dictationCurrentText decides whether
+        // the next utterance gets a leading space, so leaving it set would open the
+        // freshly cleared prompt with a stray space.
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        vpLog("[App] clear: terminal line and dictation state reset")
     }
 
     private func submitDictation() {

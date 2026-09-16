@@ -24,16 +24,19 @@ final class ParkZoneController: NSObject {
     private let terminalController: TerminalController
     private var debouncer: HoverParkDebouncer?
 
-    // Send button, a companion window rather than a control inside the zone: anything
-    // inside the zone would sit in its tracking area, so reaching for it would park —
-    // and submitDictation is a no-op while parked, making the button unpressable.
-    private var sendPanel: NSPanel?
-    private let sendModel = SendButtonModel()
-    private static let sendGap: CGFloat = 10
-    private static let sendSize = NSSize(width: 58, height: 46)
+    // Action buttons are companion windows rather than controls inside the zone:
+    // anything inside the zone would sit in its tracking area, so reaching for it
+    // would park — and the submit and clear paths are both no-ops while parked, making
+    // the buttons dead exactly when aimed at.
+    private var buttons: [ZoneButtonWindow] = []
+    private static let buttonGap: CGFloat = 10      // zone to column
+    private static let buttonSpacing: CGFloat = 8   // button to button
+    private static let buttonSize = NSSize(width: 58, height: 46)
 
     /// Invoked on send. Wired by AppDelegate to the same path as middle-click.
     var onSend: (() -> Void)?
+    /// Invoked on clear. Wipes the terminal's input line.
+    var onClear: (() -> Void)?
 
     var isVisible: Bool { panel != nil }
 
@@ -107,7 +110,7 @@ final class ParkZoneController: NSObject {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(zoneFrameChanged), name: name, object: win)
         }
-        showSendButton()
+        showButtons()
 
         UserDefaults.standard.set(true, forKey: Self.visibleKey)
         vpLog("[Park] zone shown at \(win.frame)")
@@ -118,7 +121,7 @@ final class ParkZoneController: NSObject {
         win.saveFrame(usingName: Self.autosaveName)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didMoveNotification, object: win)
         NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: win)
-        hideSendButton()
+        hideButtons()
         win.orderOut(nil)
         panel = nil
 
@@ -132,13 +135,40 @@ final class ParkZoneController: NSObject {
         vpLog("[Park] zone hidden")
     }
 
-    // MARK: - Send button
+    // MARK: - Action buttons
 
-    private func showSendButton() {
-        guard sendPanel == nil else { return }
+    private func showButtons() {
+        guard buttons.isEmpty else { return }
 
+        buttons = [
+            makeButton(id: "send", symbol: "return", title: "Send", accent: .green) { [weak self] in
+                vpLog("[Park] send button pressed")
+                self?.onSend?()
+            },
+            makeButton(id: "clear", symbol: "delete.left", title: "Clear", accent: .red) { [weak self] in
+                vpLog("[Park] clear button pressed")
+                self?.onClear?()
+            },
+        ]
+
+        // Position before ordering front, so no button is ever seen at its default
+        // origin — the first placement used to be a silent no-op for exactly this
+        // kind of ordering mistake.
+        positionButtons()
+        for b in buttons { b.panel.orderFront(nil) }
+        vpLog("[Park] \(buttons.count) action buttons shown")
+    }
+
+    private func makeButton(
+        id: String,
+        symbol: String,
+        title: String,
+        accent: Color,
+        action: @escaping () -> Void
+    ) -> ZoneButtonWindow {
+        let size = Self.buttonSize
         let win = NonFocusingPanel(
-            contentRect: NSRect(origin: .zero, size: Self.sendSize),
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel, .utilityWindow],
             backing: .buffered,
             defer: false
@@ -150,68 +180,85 @@ final class ParkZoneController: NSObject {
         win.hasShadow = false
         win.hidesOnDeactivate = false
         win.appearance = NSAppearance(named: .darkAqua)
-        // Deliberately NOT movableByWindowBackground: it follows the zone, and a
+        // Deliberately NOT movableByWindowBackground: buttons follow the zone, and a
         // click that drifts a pixel must stay a click rather than becoming a drag.
         win.isMovableByWindowBackground = false
 
-        let click = SendButtonView(frame: NSRect(origin: .zero, size: Self.sendSize))
+        let model = ZoneButtonModel()
+        let click = SendButtonView(frame: NSRect(origin: .zero, size: size))
         click.autoresizingMask = [.width, .height]
-        click.onPressedChange = { [weak self] down in self?.sendModel.pressed = down }
-        click.onClick = { [weak self] in
-            vpLog("[Park] send button pressed")
-            self?.onSend?()
-        }
+        click.onPressedChange = { down in model.pressed = down }
+        click.onClick = action
 
-        let host = NSHostingView(rootView: SendButtonContent(model: sendModel))
+        let host = NSHostingView(
+            rootView: ZoneButtonContent(model: model, symbol: symbol, title: title, accent: accent)
+        )
         host.frame = click.bounds
         host.autoresizingMask = [.width, .height]
         // Display only — if the SwiftUI layer took hits it would swallow mouseDown
         // before the AppKit container, which is what actually makes the click work
         // in a window that never becomes key.
-        host.isHidden = false
         click.addSubview(host)
         click.hitTestSubviewsDisabled = true
 
         win.contentView = click
-        // Assign before positioning: positionSendButton reads sendPanel, so doing this
-        // the other way round makes the first placement a silent no-op.
-        sendPanel = win
-        positionSendButton()
-        win.orderFront(nil)
-        vpLog("[Park] send button shown at \(win.frame)")
+        return ZoneButtonWindow(id: id, panel: win, model: model)
     }
 
-    private func hideSendButton() {
-        sendPanel?.orderOut(nil)
-        sendPanel = nil
+    private func hideButtons() {
+        for b in buttons { b.panel.orderOut(nil) }
+        buttons.removeAll()
     }
 
     @objc private func zoneFrameChanged() {
-        positionSendButton()
+        positionButtons()
     }
 
-    /// Sits just outside the zone, never touching it, so the zone's tracking area and
-    /// the button's click target can never overlap. Flips to the zone's other side when
-    /// there is not enough room, so it cannot end up off screen.
-    private func positionSendButton() {
-        guard let zone = panel, let send = sendPanel else { return }
+    /// Lays the buttons out as a vertical column just outside the zone, never touching
+    /// it, so the zone's tracking area and the click targets can never overlap. Flips
+    /// to the zone's other side when there is not enough room on the preferred one.
+    private func positionButtons() {
+        guard let zone = panel, !buttons.isEmpty else { return }
         let z = zone.frame
-        let size = Self.sendSize
-        let y = z.midY - size.height / 2
+        let size = Self.buttonSize
+        let n = CGFloat(buttons.count)
+        let columnHeight = n * size.height + (n - 1) * Self.buttonSpacing
 
-        var x = z.minX - Self.sendGap - size.width          // prefer the left
+        var x = z.minX - Self.buttonGap - size.width          // prefer the left
         let screen = NSScreen.screens.first { $0.frame.intersects(z) } ?? NSScreen.main
-        if let vf = screen?.visibleFrame, x < vf.minX {
-            x = z.maxX + Self.sendGap                        // flip to the right
-            if x + size.width > vf.maxX { x = vf.maxX - size.width }
+        if let vf = screen?.visibleFrame {
+            if x < vf.minX {
+                x = z.maxX + Self.buttonGap                   // flip to the right
+                if x + size.width > vf.maxX { x = vf.maxX - size.width }
+            }
         }
-        send.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+
+        // Column centred on the zone, filling downwards from the top.
+        var y = z.midY + columnHeight / 2 - size.height
+        for b in buttons {
+            b.panel.setFrame(
+                NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+            y -= size.height + Self.buttonSpacing
+        }
     }
 }
 
-// MARK: - Send button internals
+/// One action button window plus the model driving its pressed appearance.
+private final class ZoneButtonWindow {
+    let id: String
+    let panel: NSPanel
+    let model: ZoneButtonModel
 
-private final class SendButtonModel: ObservableObject {
+    init(id: String, panel: NSPanel, model: ZoneButtonModel) {
+        self.id = id
+        self.panel = panel
+        self.model = model
+    }
+}
+
+// MARK: - Action button internals
+
+private final class ZoneButtonModel: ObservableObject {
     @Published var pressed = false
 }
 
@@ -245,23 +292,26 @@ private final class SendButtonView: NSView {
     }
 }
 
-private struct SendButtonContent: View {
-    @ObservedObject var model: SendButtonModel
+private struct ZoneButtonContent: View {
+    @ObservedObject var model: ZoneButtonModel
+    let symbol: String
+    let title: String
+    let accent: Color
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 12)
-                .fill(model.pressed ? Color.green.opacity(0.40) : Color.black.opacity(0.30))
+                .fill(model.pressed ? accent.opacity(0.40) : Color.black.opacity(0.30))
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(model.pressed ? Color.green.opacity(0.9) : Color.white.opacity(0.20),
+                .strokeBorder(model.pressed ? accent.opacity(0.9) : Color.white.opacity(0.20),
                               lineWidth: model.pressed ? 2 : 1)
             VStack(spacing: 2) {
-                Image(systemName: "return")
+                Image(systemName: symbol)
                     .font(.system(size: 17, weight: .medium))
-                Text("Send")
+                Text(title)
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundColor(model.pressed ? .green : Color.white.opacity(0.55))
+            .foregroundColor(model.pressed ? accent : Color.white.opacity(0.55))
         }
         .animation(.easeOut(duration: 0.1), value: model.pressed)
     }
