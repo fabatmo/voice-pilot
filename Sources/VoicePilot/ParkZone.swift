@@ -15,7 +15,7 @@ private final class NonFocusingPanel: NSPanel {
 /// target fires by accident. This window goes wherever the user drags it, at whatever
 /// size they choose, and its frame survives relaunches — which matters because the app
 /// relaunches on every engine switch and every permission change.
-final class ParkZoneController: NSObject {
+final class ParkZoneController: NSObject, WindowRevealing {
     /// Whether the zone was on screen last time, so it comes back on relaunch.
     static let visibleKey = "parkZoneVisible"
     private static let autosaveName = "VoicePilotParkZone"
@@ -133,6 +133,32 @@ final class ParkZoneController: NSObject {
 
         UserDefaults.standard.set(false, forKey: Self.visibleKey)
         vpLog("[Park] zone hidden")
+    }
+
+    // MARK: - Recovery after wake / display change
+
+    /// Re-asserts the zone and its buttons. The frame check has to come first: after a
+    /// display goes away the zone can be sitting where no screen is, and ordering an
+    /// off-screen window front is a no-op the user reads as "the app lost my window".
+    func reveal() {
+        guard let win = panel else { return }
+
+        ensureWindowOnScreen(win, label: "park zone")
+        win.level = .floating
+        win.orderFront(nil)
+
+        // Buttons are placed relative to the zone, so they must be recomputed after any
+        // move rather than merely raised.
+        positionButtons()
+        for b in buttons {
+            b.panel.level = .floating
+            b.panel.orderFront(nil)
+        }
+
+        // Persist the corrected position: the frame autosave will have already stored
+        // the displaced one, which is how a bad frame survives a relaunch.
+        win.saveFrame(usingName: Self.autosaveName)
+        vpLog("[Park] revealed — zone at \(win.frame), \(buttons.count) buttons")
     }
 
     // MARK: - Action buttons

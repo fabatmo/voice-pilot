@@ -6,6 +6,7 @@ class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
     private var parkZone: ParkZoneController
+    private var onBringToFront: () -> Void
     private var onQuit: () -> Void
     private var onShowWindow: () -> Void
     private var cancellables = Set<AnyCancellable>()
@@ -13,11 +14,13 @@ class StatusBarController {
     init(
         speechEngine: SpeechEngine,
         parkZone: ParkZoneController,
+        onBringToFront: @escaping () -> Void,
         onQuit: @escaping () -> Void,
         onShowWindow: @escaping () -> Void
     ) {
         self.speechEngine = speechEngine
         self.parkZone = parkZone
+        self.onBringToFront = onBringToFront
         self.onQuit = onQuit
         self.onShowWindow = onShowWindow
 
@@ -78,6 +81,17 @@ class StatusBarController {
         zoneItem.target = self
         menu.addItem(zoneItem)
 
+        // Manual escape hatch: the wake handler should make this unnecessary, but a
+        // window you cannot get back is worth a one-click recovery either way.
+        let frontItem = NSMenuItem(
+            title: "Bring Windows to Front",
+            action: #selector(bringToFront),
+            keyEquivalent: "f"
+        )
+        frontItem.keyEquivalentModifierMask = [.command, .shift]
+        frontItem.target = self
+        menu.addItem(frontItem)
+
         let panelHoverItem = NSMenuItem(
             title: "Park on Panel Hover",
             action: #selector(togglePanelHover),
@@ -125,6 +139,11 @@ class StatusBarController {
 
     @objc private func quit() {
         onQuit()
+    }
+
+    @objc private func bringToFront() {
+        vpLog("[StatusBar] bring windows to front requested")
+        onBringToFront()
     }
 
     @objc private func toggleParkZone() {

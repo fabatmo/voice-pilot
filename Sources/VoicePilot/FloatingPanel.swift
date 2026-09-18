@@ -11,7 +11,7 @@ class NonActivatingPanel: NSPanel {
 // HoverReportingView and HoverParkDebouncer live in HoverPark.swift — shared with
 // the standalone park zone.
 
-class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
+class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, WindowRevealing {
     var window: NSWindow?
     private var speechEngine: SpeechEngine
     private var terminalController: TerminalController
@@ -80,6 +80,16 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
         panel.orderFront(nil)
         self.window = panel
+    }
+
+    /// Re-asserts the transcript panel after a wake or display change. Same exposure as
+    /// the park zone: a frame left on a departed display cannot be raised into view.
+    func reveal() {
+        guard let win = window else { return }
+        ensureWindowOnScreen(win, label: "transcript panel")
+        win.level = .floating
+        win.orderFront(nil)
+        vpLog("[Panel] revealed at \(win.frame)")
     }
 
     // MARK: - Hover parking

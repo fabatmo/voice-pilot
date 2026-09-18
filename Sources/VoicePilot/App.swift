@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var floatingPanel: FloatingPanelController?
     var dictationManager: DictationManager?
     var parkZone: ParkZoneController?
+    var windowKeeper: WindowKeeper?
 
     private var dictationCurrentText = ""
     private var dictationSuppressUntil: Date = .distantPast
@@ -52,9 +53,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.clearDictation()
         }
 
+        // Recovers both floating windows after screen wake and display changes. Run once
+        // now as well: launching while a display is still asleep (login, or a relaunch
+        // after an engine switch) can restore a frame onto a screen that is not there.
+        windowKeeper = WindowKeeper(targets: [floatingPanel!, parkZone!])
+        windowKeeper?.revealNow()
+
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
             parkZone: parkZone!,
+            onBringToFront: { [weak self] in self?.windowKeeper?.revealNow() },
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
                 self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)
