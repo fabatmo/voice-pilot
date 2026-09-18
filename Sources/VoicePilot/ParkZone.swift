@@ -32,6 +32,13 @@ final class ParkZoneController: NSObject, WindowRevealing {
     private static let buttonGap: CGFloat = 10      // zone to column
     private static let buttonSpacing: CGFloat = 8   // button to button
     private static let buttonSize = NSSize(width: 58, height: 46)
+    private static let cardMargin: CGFloat = 10     // card edge to column, top and bottom
+    private static let buttonCount = 2              // Send, Clear
+
+    private static func columnHeight(count: Int) -> CGFloat {
+        let n = CGFloat(count)
+        return n * buttonSize.height + (n - 1) * buttonSpacing
+    }
 
     /// Invoked on send. Wired by AppDelegate to the same path as middle-click.
     var onSend: (() -> Void)?
@@ -77,7 +84,8 @@ final class ParkZoneController: NSObject, WindowRevealing {
         win.isOpaque = false
         win.hasShadow = false
         win.hidesOnDeactivate = false
-        win.minSize = NSSize(width: 64, height: 44)
+        win.minSize = NSSize(width: 80, height: 44)   // replaced below, once the
+                                                      // titlebar inset is measurable
         win.appearance = NSAppearance(named: .darkAqua)
 
         let debouncer = HoverParkDebouncer { [weak self] parked in
@@ -104,6 +112,25 @@ final class ParkZoneController: NSObject, WindowRevealing {
 
         win.orderFront(nil)
         panel = win
+
+        // The card is drawn in the safe area, which excludes the hidden titlebar strip,
+        // so the window is always taller than what the user sees. Measure that inset
+        // rather than assuming it, then keep the window tall enough for the button
+        // column to sit inside the card with real margins — below this the buttons
+        // overhang the card, which is the reported fault.
+        let cardInset = max(0, win.frame.height - win.contentLayoutRect.height)
+        let minCard = Self.columnHeight(count: Self.buttonCount) + Self.cardMargin * 2
+        win.minSize = NSSize(width: 80, height: minCard + cardInset)
+        if win.frame.height < win.minSize.height {
+            var f = win.frame
+            // Grow downward from the top edge, so the zone stays where it was put.
+            f.origin.y -= win.minSize.height - f.height
+            f.size.height = win.minSize.height
+            win.setFrame(f, display: true)
+            vpLog("[Park] grew zone to \(f.size) so the buttons fit inside the card")
+        }
+        vpLog("[Park] geometry frame=\(win.frame) contentLayout=\(win.contentLayoutRect) "
+              + "cardInset=\(cardInset) minSize=\(win.minSize)")
 
         // Keep the button glued to the zone as it is dragged and resized.
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
@@ -240,15 +267,28 @@ final class ParkZoneController: NSObject, WindowRevealing {
         positionButtons()
     }
 
+    /// Screen rect of the card the user actually sees.
+    ///
+    /// Not the window frame. The zone is a .titled window, so its frame includes a
+    /// titlebar strip that is hidden but still reserved, and the card is drawn below it.
+    /// Centring the column on the frame therefore sits it visibly high against the card
+    /// and lets the top button overhang — which is exactly what was reported.
+    private func zoneCardRect() -> NSRect {
+        guard let win = panel else { return .zero }
+        let layout = win.contentLayoutRect
+        guard layout.width > 0, layout.height > 0 else { return win.frame }
+        return win.convertToScreen(layout)
+    }
+
     /// Lays the buttons out as a vertical column just outside the zone, never touching
     /// it, so the zone's tracking area and the click targets can never overlap. Flips
     /// to the zone's other side when there is not enough room on the preferred one.
     private func positionButtons() {
-        guard let zone = panel, !buttons.isEmpty else { return }
-        let z = zone.frame
+        guard !buttons.isEmpty else { return }
+        let z = zoneCardRect()
+        guard z.height > 0 else { return }
         let size = Self.buttonSize
-        let n = CGFloat(buttons.count)
-        let columnHeight = n * size.height + (n - 1) * Self.buttonSpacing
+        let columnHeight = Self.columnHeight(count: buttons.count)
 
         var x = z.minX - Self.buttonGap - size.width          // prefer the left
         let screen = NSScreen.screens.first { $0.frame.intersects(z) } ?? NSScreen.main
