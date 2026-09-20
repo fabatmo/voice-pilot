@@ -59,10 +59,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowKeeper = WindowKeeper(targets: [floatingPanel!, parkZone!])
         windowKeeper?.revealNow()
 
+        dictationManager?.onRecall = { [weak self] in
+            self?.windowKeeper?.recallNow()
+        }
+
+        // Ops escape hatch, same pattern as VOICEPILOT_ENGINE: launch with
+        // VOICEPILOT_RECALL=1 to drag the windows onto the pointer's display, for when
+        // they are stranded on a monitor that is off or not being looked at.
+        if ProcessInfo.processInfo.environment["VOICEPILOT_RECALL"] == "1" {
+            vpLog("[App] VOICEPILOT_RECALL=1 — recalling windows to the pointer")
+            windowKeeper?.recallNow()
+        }
+
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
             parkZone: parkZone!,
-            onBringToFront: { [weak self] in self?.windowKeeper?.revealNow() },
+            onBringToFront: { [weak self] in self?.windowKeeper?.recallNow() },
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
                 self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)

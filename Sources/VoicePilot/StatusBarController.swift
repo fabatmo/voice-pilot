@@ -84,11 +84,10 @@ class StatusBarController {
         // Manual escape hatch: the wake handler should make this unnecessary, but a
         // window you cannot get back is worth a one-click recovery either way.
         let frontItem = NSMenuItem(
-            title: "Bring Windows to Front",
+            title: "Bring Windows Here  (⌃⇧P)",
             action: #selector(bringToFront),
-            keyEquivalent: "f"
+            keyEquivalent: ""
         )
-        frontItem.keyEquivalentModifierMask = [.command, .shift]
         frontItem.target = self
         menu.addItem(frontItem)
 

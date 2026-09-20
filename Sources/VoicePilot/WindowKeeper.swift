@@ -2,7 +2,10 @@ import AppKit
 
 /// Anything that can put itself back on screen and in front.
 protocol WindowRevealing: AnyObject {
+    /// Put myself back on a screen and in front, without relocating if already fine.
     func reveal()
+    /// Move myself to the screen the pointer is on, even if I was already visible.
+    func recallToPointer()
 }
 
 /// Puts VoicePilot's floating windows back after the system hides or displaces them.
@@ -62,11 +65,37 @@ final class WindowKeeper {
         for t in targets { t.reveal() }
     }
 
+    /// User-initiated "where did it go" recovery: gather the windows onto whichever
+    /// display the pointer is on, then raise them.
+    func recallNow() {
+        vpLog("[Keeper] recall requested")
+        for t in targets {
+            t.recallToPointer()
+            t.reveal()
+        }
+    }
+
     deinit {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
         debounce?.invalidate()
     }
+}
+
+/// The screen the user is demonstrably looking at.
+///
+/// The pointer beats NSScreen.main, which is only wherever the menu bar happens to be.
+/// Observed 2026-09-20: a display rearrangement stranded the park zone, the keeper
+/// relocated it to main, and that was a monitor the user was not using — so it read as
+/// "it's gone somewhere" even though it was on screen the whole time.
+/// NSScreen.main is nil for an accessory app with no key window — which is always, for
+/// this app — so it cannot be the last link in the chain. Ending there is what made the
+/// first recall attempt a silent no-op.
+func screenUnderPointer() -> NSScreen? {
+    let p = NSEvent.mouseLocation
+    if let hit = NSScreen.screens.first(where: { $0.frame.contains(p) }) { return hit }
+    vpLog("[Keeper] pointer \(p) is on no screen frame — falling back")
+    return NSScreen.main ?? NSScreen.screens.first
 }
 
 /// Pulls a window back onto a screen that actually exists.
@@ -76,11 +105,32 @@ final class WindowKeeper {
 func ensureWindowOnScreen(_ win: NSWindow, label: String) {
     let f = win.frame
     if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(f) }) { return }
-
-    guard let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
+    guard let vf = screenUnderPointer()?.visibleFrame else { return }
     // Clamp rather than recentre, so a window only moves as far as it must.
     let x = min(max(f.minX, vf.minX), max(vf.minX, vf.maxX - f.width))
     let y = min(max(f.minY, vf.minY), max(vf.minY, vf.maxY - f.height))
     vpLog("[Keeper] \(label) frame \(f) is off every screen — moving to (\(x), \(y))")
+    win.setFrame(NSRect(x: x, y: y, width: f.width, height: f.height), display: true)
+}
+
+/// Moves a window onto the pointer's screen whether or not it was already visible.
+///
+/// Distinct from reveal(): a window can be perfectly on-screen, front, and opaque and
+/// still be lost, because it is on a monitor the user is not looking at. Ordering it
+/// front achieves nothing in that case — it has to actually move.
+func recallWindowToPointer(_ win: NSWindow, label: String, inset: NSPoint) {
+    guard let vf = screenUnderPointer()?.visibleFrame else {
+        vpLog("[Keeper] \(label) recall ABORTED — no screen could be determined")
+        return
+    }
+    let f = win.frame
+    vpLog("[Keeper] \(label) recall: frame=\(f) targetScreen=\(vf)")
+    if vf.intersects(f) {
+        vpLog("[Keeper] \(label) already on the pointer's screen")
+        return
+    }
+    let x = min(max(vf.minX + inset.x, vf.minX), max(vf.minX, vf.maxX - f.width - inset.x))
+    let y = vf.minY + inset.y
+    vpLog("[Keeper] recalling \(label) from \(f.origin) to (\(x), \(y))")
     win.setFrame(NSRect(x: x, y: y, width: f.width, height: f.height), display: true)
 }

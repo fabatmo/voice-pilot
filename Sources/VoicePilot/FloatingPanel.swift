@@ -84,6 +84,11 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, Win
 
     /// Re-asserts the transcript panel after a wake or display change. Same exposure as
     /// the park zone: a frame left on a departed display cannot be raised into view.
+    func recallToPointer() {
+        guard let win = window else { return }
+        recallWindowToPointer(win, label: "transcript panel", inset: NSPoint(x: 40, y: 200))
+    }
+
     func reveal() {
         guard let win = window else { return }
         ensureWindowOnScreen(win, label: "transcript panel")

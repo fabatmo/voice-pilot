@@ -167,6 +167,16 @@ final class ParkZoneController: NSObject, WindowRevealing {
     /// Re-asserts the zone and its buttons. The frame check has to come first: after a
     /// display goes away the zone can be sitting where no screen is, and ordering an
     /// off-screen window front is a no-op the user reads as "the app lost my window".
+    /// Brings the zone to the display the pointer is on. Buttons follow via
+    /// positionButtons in reveal(), which the caller runs straight after.
+    func recallToPointer() {
+        guard let win = panel else { return }
+        // Inset from the screen's left edge leaves room for the button column, which
+        // hangs off that side.
+        recallWindowToPointer(win, label: "park zone", inset: NSPoint(x: 90, y: 80))
+        win.saveFrame(usingName: Self.autosaveName)
+    }
+
     func reveal() {
         guard let win = panel else { return }
 
