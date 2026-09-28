@@ -125,10 +125,9 @@ func recallWindowToPointer(_ win: NSWindow, label: String, inset: NSPoint) {
     }
     let f = win.frame
     vpLog("[Keeper] \(label) recall: frame=\(f) targetScreen=\(vf)")
-    if vf.intersects(f) {
-        vpLog("[Keeper] \(label) already on the pointer's screen")
-        return
-    }
+    // Unconditional. Recall is only ever user-initiated — it runs because the window
+    // could not be found — so "it is technically on some screen, leave it" is the one
+    // answer that is never useful. Put it somewhere known instead.
     let x = min(max(vf.minX + inset.x, vf.minX), max(vf.minX, vf.maxX - f.width - inset.x))
     let y = vf.minY + inset.y
     vpLog("[Keeper] recalling \(label) from \(f.origin) to (\(x), \(y))")
