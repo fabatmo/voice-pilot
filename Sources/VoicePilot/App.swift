@@ -122,9 +122,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard terminalController?.isTerminalFrontmost == true else {
+        guard terminalController?.isSubmitTarget == true else {
             let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
-            vpLog("[App] clear ignored — frontmost is \(front), not a terminal")
+            vpLog("[App] clear ignored — frontmost is \(front), not a submit target")
             return
         }
 
@@ -148,12 +148,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Enter only means "submit" in a terminal. Logged rather than silent because
-        // the Send button makes this reachable by a deliberate click, and a button that
-        // does nothing with no trace is indistinguishable from a broken one.
-        guard terminalController?.isTerminalFrontmost == true else {
+        // Enter only means "submit" in a terminal or a listed app. Logged rather than
+        // silent because the Send button makes this reachable by a deliberate click, and
+        // a button that does nothing with no trace is indistinguishable from a broken one.
+        guard terminalController?.isSubmitTarget == true else {
             let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
-            vpLog("[App] submitDictation ignored — frontmost is \(front), not a terminal")
+            vpLog("[App] submitDictation ignored — frontmost is \(front), not a submit target")
             return
         }
 

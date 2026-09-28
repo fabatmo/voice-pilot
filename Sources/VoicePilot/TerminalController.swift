@@ -44,6 +44,28 @@ class TerminalController: ObservableObject {
         return terminalApps.contains(frontApp)
     }
 
+    /// Non-terminal apps where Enter means "submit" and clearing the input is meaningful.
+    ///
+    /// Deliberately NOT merged into terminalApps: that set also decides how text is
+    /// typed (AppleScript keystroke vs Accessibility) and what "Terminal only" mode
+    /// admits, so listing an app here must not silently change how dictation reaches it.
+    ///
+    /// Runtime-extendable, so a new app needs no rebuild:
+    ///   defaults write com.fabianklainman.VoicePilot VoicePilotSubmitApps -array Orca Foo
+    static let submitAppsKey = "VoicePilotSubmitApps"
+    private static let defaultSubmitApps = ["Orca"]
+
+    private var extraSubmitApps: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: Self.submitAppsKey) ?? Self.defaultSubmitApps)
+    }
+
+    /// True when Send and Clear make sense in whatever is frontmost.
+    var isSubmitTarget: Bool {
+        if frontmostIsTerminal { return true }
+        guard let name = NSWorkspace.shared.frontmostApplication?.localizedName else { return false }
+        return extraSubmitApps.contains(name)
+    }
+
     /// Find a terminal, activate it, paste text, and press Enter
     func activateTerminalAndPasteEnter(_ text: String) {
         let pasteboard = NSPasteboard.general
@@ -184,7 +206,11 @@ class TerminalController: ObservableObject {
 
     /// Dictation submit — always targets a terminal. Does nothing if no terminal is frontmost.
     func pressEnter() {
-        if !frontmostIsTerminal { return }
+        guard isSubmitTarget else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[TC] pressEnter ignored — \(front) is not a submit target")
+            return
+        }
 
         let script = """
         tell application "System Events"
@@ -201,19 +227,36 @@ class TerminalController: ObservableObject {
     /// the cursor would survive. Moving to end-of-line first makes it clear the whole
     /// line there, and zsh's kill-whole-line is indifferent to the extra move.
     func clearLine() {
-        if !frontmostIsTerminal {
-            vpLog("[TC] clearLine ignored — frontmost is not a terminal")
+        guard isSubmitTarget else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[TC] clearLine ignored — \(front) is not a submit target")
             return
         }
 
-        let script = """
-        tell application "System Events"
-            key code 14 using {control down}
-            key code 32 using {control down}
-        end tell
-        """
-        runAppleScript(script)
-        vpLog("[TC] clearLine sent (ctrl-E then ctrl-U)")
+        if frontmostIsTerminal {
+            let script = """
+            tell application "System Events"
+                key code 14 using {control down}
+                key code 32 using {control down}
+            end tell
+            """
+            runAppleScript(script)
+            vpLog("[TC] clearLine sent (ctrl-E then ctrl-U)")
+            return
+        }
+
+        // GUI app: empty the focused text field through Accessibility.
+        //
+        // Deliberately NOT Cmd+A then Delete. Those are readline-free and would "work"
+        // anywhere, which is the problem: if focus is not in a text field, Cmd+A selects
+        // whatever the app calls everything — a message list, a canvas, a document — and
+        // Delete then destroys it. Writing "" through AX only touches an element whose
+        // value is already a string, so a miss is a no-op rather than data loss.
+        if clearViaAccessibility() {
+            vpLog("[TC] clearLine: focused text field cleared via AX")
+        } else {
+            vpLog("[TC] clearLine: no writable text field found — nothing cleared")
+        }
     }
 
     private var savedClipboard: String?
@@ -315,13 +358,41 @@ class TerminalController: ObservableObject {
         return true
     }
 
-    /// Insert text at the cursor of the focused text field via the Accessibility API.
-    /// Queries focused elements from three sources — system-wide, app-level, and focused-window —
-    /// then tries direct write and descendant walk on each. The multi-source approach is needed
-    /// because Catalyst/UIKit apps (WhatsApp) and Chromium browsers return different elements
-    /// depending on the query level.
-    /// Returns false only if no writable text element is reachable (Finder, video player, no focus).
-    private func insertViaAccessibility(_ text: String) -> Bool {
+    /// Apps already asked to expose their full AX tree, so the opt-in is not repeated on
+    /// every utterance.
+    private var chromiumOptIn: Set<pid_t> = []
+
+    /// Ask a Chromium or Electron app to expose its real accessibility tree.
+    ///
+    /// Those apps ship a stub AX tree and only build the full one when an assistive
+    /// client sets AXManualAccessibility — without it, the focused text field simply is
+    /// not there to find. Confirmed against Orca (com.stablyai.orca) on 2026-09-28: the
+    /// attribute is present and accepts the write, after which the focused window starts
+    /// exposing children. Likely relevant well beyond Orca: AX insertion was measured
+    /// failing 94% in Chrome and 100% in Claude, both Electron.
+    private func enableChromiumAccessibility(on appElement: AXUIElement) {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(appElement, &pid) == .success else { return }
+        guard !chromiumOptIn.contains(pid) else { return }
+
+        var names: CFArray?
+        AXUIElementCopyAttributeNames(appElement, &names)
+        guard let list = names as? [String], list.contains("AXManualAccessibility") else {
+            chromiumOptIn.insert(pid)   // not Chromium-based; never ask again
+            return
+        }
+
+        let r = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        chromiumOptIn.insert(pid)
+        vpLog("[TC] AXManualAccessibility opt-in for pid \(pid) -> \(r.rawValue) (0 = ok)")
+    }
+
+    /// Focused-element candidates, from three sources.
+    ///
+    /// The multi-source approach is needed because Catalyst/UIKit apps (WhatsApp) and
+    /// Chromium browsers return different elements depending on the query level. Shared
+    /// by insertion and clearing so both agree on what "the focused field" means.
+    private func focusedTextCandidates() -> ([AXUIElement], AXError) {
         var candidates: [AXUIElement] = []
 
         // Source 1: System-wide focused element (works for Cocoa-native apps)
@@ -337,6 +408,7 @@ class TerminalController: ObservableObject {
         // Source 2: App-level focused element (penetrates Catalyst UIKit bridge)
         if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             let appElement = AXUIElementCreateApplication(pid)
+            enableChromiumAccessibility(on: appElement)
 
             var appFocused: AnyObject?
             if AXUIElementCopyAttributeValue(
@@ -359,6 +431,45 @@ class TerminalController: ObservableObject {
                 }
             }
         }
+
+        return (candidates, sysResult)
+    }
+
+    /// Empty the focused text field via the Accessibility API.
+    ///
+    /// Only writes to an element whose value already reads as a string, so pointing this
+    /// at a list, canvas or web view is a no-op rather than a deletion. That restraint is
+    /// the entire reason this exists instead of Cmd+A followed by Delete.
+    private func clearViaAccessibility() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        guard !candidates.isEmpty else { return false }
+
+        for el in candidates where clearText(in: el) { return true }
+        for el in candidates {
+            if let desc = findFocusedTextDescendant(in: el), clearText(in: desc) { return true }
+        }
+        return false
+    }
+
+    private func clearText(in element: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        guard settable.boolValue else { return false }
+
+        // Refuse anything whose current value is not a string — that is what keeps this
+        // away from non-text elements that happen to expose a settable value.
+        var current: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &current) == .success,
+              current as? String != nil else { return false }
+
+        return AXUIElementSetAttributeValue(
+            element, kAXValueAttribute as CFString, "" as CFTypeRef) == .success
+    }
+
+    /// Insert text at the cursor of the focused text field via the Accessibility API.
+    /// Returns false only if no writable text element is reachable (Finder, video player, no focus).
+    private func insertViaAccessibility(_ text: String) -> Bool {
+        let (candidates, sysResult) = focusedTextCandidates()
 
         guard !candidates.isEmpty else {
             axDiagDump(reason: "no-focused-element", element: nil, getResult: sysResult)
