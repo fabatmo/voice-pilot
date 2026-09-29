@@ -99,14 +99,18 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, Win
 
     // MARK: - Hover parking
 
-    /// Whether resting on the transcript panel parks. Off-switchable because the panel
-    /// sits where the pointer naturally comes to rest, so it parks by accident; the
-    /// standalone park zone is the deliberate target. Defaults on, so enabling the zone
-    /// never silently removes behaviour that already worked.
+    /// Whether resting on the transcript panel parks dictation.
+    ///
+    /// Defaults OFF. The panel is where the pointer naturally comes to rest — measured
+    /// on the first day, and confirmed 2026-09-29 when 4 of 13 utterances went to the
+    /// buffer instead of the terminal, every one of them held by [panel] while the user
+    /// believed the app had stopped working. Silent buffering is indistinguishable from
+    /// a broken app, so the accidental target is off and the deliberate one (the
+    /// standalone park zone) is the only one armed. Re-enable from the menu.
     static let panelHoverKey = "parkOnPanelHover"
 
     static var panelHoverEnabled: Bool {
-        UserDefaults.standard.object(forKey: panelHoverKey) as? Bool ?? true
+        UserDefaults.standard.object(forKey: panelHoverKey) as? Bool ?? false
     }
 
     private lazy var parkDebouncer = HoverParkDebouncer { [weak self] parked in

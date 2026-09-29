@@ -377,9 +377,9 @@ private struct ZoneButtonContent: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
-                .fill(model.pressed ? accent.opacity(0.85) : ZoneStyle.fill)
+                .fill(model.pressed ? accent.opacity(0.40) : ZoneStyle.fill)
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
-                .strokeBorder(model.pressed ? accent : ZoneStyle.border,
+                .strokeBorder(model.pressed ? accent.opacity(0.9) : ZoneStyle.border,
                               lineWidth: model.pressed ? 2 : 1)
             VStack(spacing: 2) {
                 Image(systemName: symbol)
@@ -387,7 +387,7 @@ private struct ZoneButtonContent: View {
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundColor(model.pressed ? .white : ZoneStyle.ink)
+            .foregroundColor(model.pressed ? accent : Color.white.opacity(0.55))
         }
         .animation(.easeOut(duration: 0.1), value: model.pressed)
     }
@@ -397,18 +397,18 @@ private struct ZoneButtonContent: View {
 
 /// Palette for the floating controls.
 ///
-/// Near-opaque on purpose. These were translucent washes (black at 30%), which meant
-/// the card took its colour from whatever happened to be behind it — light grey over a
-/// white window, solid black over a dark one, with no say in the matter. A floating
-/// control has to look the same wherever it is dragged, so the background is its own.
+/// Translucent by request — these sit on top of whatever is being dictated into, and
+/// the point is to see through them. A solid card was tried and rejected. The trade is
+/// accepted deliberately: the controls take their apparent colour from the backdrop, so
+/// they read light over a pale window and dark over a black one.
 enum ZoneStyle {
-    static let fill = Color(white: 0.72)
-    static let border = Color(white: 0.52)
-    static let ink = Color(white: 0.24)
+    static let fill = Color.black.opacity(0.30)
+    static let border = Color.white.opacity(0.20)
+    static let ink = Color.white.opacity(0.45)
 
-    static let parkedFill = Color(red: 0.98, green: 0.72, blue: 0.32)
-    static let parkedBorder = Color(red: 0.72, green: 0.44, blue: 0.05)
-    static let parkedInk = Color(red: 0.30, green: 0.17, blue: 0.0)
+    static let parkedFill = Color.orange.opacity(0.20)
+    static let parkedBorder = Color.orange.opacity(0.85)
+    static let parkedInk = Color.orange
 
     static let corner: CGFloat = 12
 }
