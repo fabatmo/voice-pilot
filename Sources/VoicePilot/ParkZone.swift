@@ -376,10 +376,10 @@ private struct ZoneButtonContent: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(model.pressed ? accent.opacity(0.40) : Color.black.opacity(0.30))
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(model.pressed ? accent.opacity(0.9) : Color.white.opacity(0.20),
+            RoundedRectangle(cornerRadius: ZoneStyle.corner)
+                .fill(model.pressed ? accent.opacity(0.85) : ZoneStyle.fill)
+            RoundedRectangle(cornerRadius: ZoneStyle.corner)
+                .strokeBorder(model.pressed ? accent : ZoneStyle.border,
                               lineWidth: model.pressed ? 2 : 1)
             VStack(spacing: 2) {
                 Image(systemName: symbol)
@@ -387,13 +387,31 @@ private struct ZoneButtonContent: View {
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundColor(model.pressed ? accent : Color.white.opacity(0.55))
+            .foregroundColor(model.pressed ? .white : ZoneStyle.ink)
         }
         .animation(.easeOut(duration: 0.1), value: model.pressed)
     }
 }
 
 // MARK: - Appearance
+
+/// Palette for the floating controls.
+///
+/// Near-opaque on purpose. These were translucent washes (black at 30%), which meant
+/// the card took its colour from whatever happened to be behind it — light grey over a
+/// white window, solid black over a dark one, with no say in the matter. A floating
+/// control has to look the same wherever it is dragged, so the background is its own.
+enum ZoneStyle {
+    static let fill = Color(white: 0.72)
+    static let border = Color(white: 0.52)
+    static let ink = Color(white: 0.24)
+
+    static let parkedFill = Color(red: 0.98, green: 0.72, blue: 0.32)
+    static let parkedBorder = Color(red: 0.72, green: 0.44, blue: 0.05)
+    static let parkedInk = Color(red: 0.30, green: 0.17, blue: 0.0)
+
+    static let corner: CGFloat = 12
+}
 
 private struct ParkZoneView: View {
     @ObservedObject var terminalController: TerminalController
@@ -402,10 +420,10 @@ private struct ParkZoneView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(parked ? Color.orange.opacity(0.20) : Color.black.opacity(0.30))
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(parked ? Color.orange.opacity(0.85) : Color.white.opacity(0.20),
+            RoundedRectangle(cornerRadius: ZoneStyle.corner)
+                .fill(parked ? ZoneStyle.parkedFill : ZoneStyle.fill)
+            RoundedRectangle(cornerRadius: ZoneStyle.corner)
+                .strokeBorder(parked ? ZoneStyle.parkedBorder : ZoneStyle.border,
                               lineWidth: parked ? 2 : 1)
 
             VStack(spacing: 5) {
@@ -416,10 +434,9 @@ private struct ParkZoneView: View {
                 if parked {
                     Text("buffering")
                         .font(.system(size: 9))
-                        .foregroundColor(.orange.opacity(0.7))
                 }
             }
-            .foregroundColor(parked ? .orange : Color.white.opacity(0.45))
+            .foregroundColor(parked ? ZoneStyle.parkedInk : ZoneStyle.ink)
             .padding(6)
         }
         .animation(.easeOut(duration: 0.12), value: parked)
