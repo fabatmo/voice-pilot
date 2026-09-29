@@ -26,6 +26,11 @@ final class WindowKeeper {
     private let targets: [WindowRevealing]
     private var debounce: Timer?
 
+    /// Also fired on wake. This class owns the only wake observers in the app, and a
+    /// second set registered elsewhere would double-fire on every display change, so
+    /// non-window wake work hangs off here rather than duplicating them.
+    var onWake: (() -> Void)?
+
     init(targets: [WindowRevealing]) {
         self.targets = targets
 
@@ -56,6 +61,7 @@ final class WindowKeeper {
         let t = Timer(timeInterval: 1.2, repeats: false) { [weak self] _ in
             vpLog("[Keeper] wake / screen change — revealing windows")
             self?.revealNow()
+            self?.onWake?()
         }
         RunLoop.main.add(t, forMode: .common)
         debounce = t

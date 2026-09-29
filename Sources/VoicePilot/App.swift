@@ -63,6 +63,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.windowKeeper?.recallNow()
         }
 
+        windowKeeper?.onWake = { [weak self] in
+            self?.restartSpeechAfterWake()
+        }
+
         // Ops escape hatch, same pattern as VOICEPILOT_ENGINE: launch with
         // VOICEPILOT_RECALL=1 to drag the windows onto the pointer's display, for when
         // they are stranded on a monitor that is off or not being looked at.
@@ -91,6 +95,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         terminalController?.saveClipboard()
         dictationManager?.start()
+    }
+
+    /// Rebuild the speech pipeline after the machine wakes.
+    ///
+    /// AVAudioEngine stops when the machine sleeps and does not come back on its own.
+    /// Nothing else notices: the process stays alive, the windows still respond to
+    /// hover, the menu still opens — and not one word is heard, which reads as
+    /// "VoicePilot is off". Observed 2026-09-29: zero recognizer output for the eleven
+    /// hours after an overnight sleep, while park events kept firing normally.
+    ///
+    /// Restarts unconditionally rather than probing engine health first: on wake nobody
+    /// is mid-sentence, so the ~1s gap costs nothing, and a health check that returns a
+    /// false positive would leave the user silently deaf again for hours.
+    private func restartSpeechAfterWake() {
+        guard let engine = speechEngine else { return }
+
+        // isListening false means the user muted it deliberately. Restarting would
+        // un-mute behind their back.
+        guard engine.isListening else {
+            vpLog("[App] wake: muted, leaving speech alone")
+            return
+        }
+
+        vpLog("[App] wake: restarting the speech pipeline")
+        engine.stopListening()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            engine.startListening()
+        }
     }
 
     private func handleUtterance(_ text: String) {
