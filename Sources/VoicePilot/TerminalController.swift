@@ -245,19 +245,59 @@ class TerminalController: ObservableObject {
             return
         }
 
-        // GUI app: empty the focused text field through Accessibility.
+        // Chromium and Electron: AX for the decision, real keys for the action.
         //
-        // Deliberately NOT Cmd+A then Delete. Those are readline-free and would "work"
-        // anywhere, which is the problem: if focus is not in a text field, Cmd+A selects
-        // whatever the app calls everything — a message list, a canvas, a document — and
-        // Delete then destroys it. Writing "" through AX only touches an element whose
-        // value is already a string, so a miss is a no-op rather than data loss.
+        // Writing "" through AX has the same defect as inserting through it — React
+        // never sees an input event, so the field snaps back. Cmd+A then Delete does
+        // work, but would "work" anywhere, which is the danger: with focus outside a
+        // text box, select-all takes whatever the app calls everything — a message
+        // list, a canvas — and Delete destroys it. So the keys are sent only after AX
+        // confirms a text field actually holds focus. Reading that needs the app's real
+        // accessibility tree, hence the opt-in here; it is safe now that no mutation
+        // goes through AX for these apps.
+        if frontmostIsChromiumBased() {
+            enableChromiumAccessibilityForReading()
+            guard focusedElementIsTextField() else {
+                vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
+                return
+            }
+            let script = """
+            tell application "System Events"
+                keystroke "a" using {command down}
+                key code 51
+            end tell
+            """
+            runAppleScript(script)
+            vpLog("[TC] clearLine: select-all + delete (text field confirmed)")
+            return
+        }
+
+        // Native GUI app: empty the focused field through Accessibility. Safe here for
+        // the reason it is unsafe above — it only touches an element whose value is
+        // already a string, so a miss is a no-op rather than data loss.
         if clearViaAccessibility() {
             vpLog("[TC] clearLine: focused text field cleared via AX")
         } else {
             vpLog("[TC] clearLine: no writable text field found — nothing cleared")
         }
     }
+
+    private var chromiumReadOptIn: Set<pid_t> = []
+
+    /// Ask a Chromium/Electron app for its real accessibility tree so it can be READ.
+    /// Never used to enable AX writes for these apps — see typeText.
+    private func enableChromiumAccessibilityForReading() {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              !chromiumReadOptIn.contains(pid) else { return }
+        let r = AXUIElementSetAttributeValue(
+            AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        chromiumReadOptIn.insert(pid)
+        vpLog("[TC] AX read opt-in for pid \(pid) -> \(r.rawValue) (0 = ok)")
+    }
+
+    // The gate for the select-all path is focusedElementIsTextField() below, which
+    // already existed: it matches on AX role (AXTextField, AXTextArea, AXComboBox,
+    // AXSearchField), a stricter test than "has a string value".
 
     private var savedClipboard: String?
 
@@ -344,6 +384,24 @@ class TerminalController: ObservableObject {
             return true
         }
 
+        // Chromium and Electron apps: skip AX entirely and paste.
+        //
+        // Not because AX fails there — since the AXManualAccessibility opt-in it
+        // "succeeds" every time. That was the bug. These apps render React-controlled
+        // inputs, and writing a value through AX never fires the JS input events the
+        // component listens for, so React overwrites it on the next render and nothing
+        // reaches the screen. A synthetic Cmd+V goes through real key events, which do
+        // fire those handlers.
+        //
+        // Measured in Orca: every insertion logged "AX insertion succeeded" and typed
+        // nothing, while the same app worked all day on the clipboard path before the
+        // opt-in was added.
+        if frontmostIsChromiumBased() {
+            vpLog("[TC] chromium/electron — clipboard paste (AX writes never reach React)")
+            pasteText(text)
+            return true
+        }
+
         // Non-terminal frontmost — Any App mode.
         // Try AX first (clean, no clipboard side-effects).
         if insertViaAccessibility(text) {
@@ -358,33 +416,25 @@ class TerminalController: ObservableObject {
         return true
     }
 
-    /// Apps already asked to expose their full AX tree, so the opt-in is not repeated on
-    /// every utterance.
-    private var chromiumOptIn: Set<pid_t> = []
+    private var chromiumCache: [pid_t: Bool] = [:]
 
-    /// Ask a Chromium or Electron app to expose its real accessibility tree.
+    /// True for Chromium- and Electron-based apps.
     ///
-    /// Those apps ship a stub AX tree and only build the full one when an assistive
-    /// client sets AXManualAccessibility — without it, the focused text field simply is
-    /// not there to find. Confirmed against Orca (com.stablyai.orca) on 2026-09-28: the
-    /// attribute is present and accepts the write, after which the focused window starts
-    /// exposing children. Likely relevant well beyond Orca: AX insertion was measured
-    /// failing 94% in Chrome and 100% in Claude, both Electron.
-    private func enableChromiumAccessibility(on appElement: AXUIElement) {
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(appElement, &pid) == .success else { return }
-        guard !chromiumOptIn.contains(pid) else { return }
+    /// AXManualAccessibility is the attribute those apps expose so assistive clients can
+    /// ask for a real accessibility tree; nothing else advertises it, which makes its
+    /// presence a reliable detector. Detection only — the attribute is deliberately NOT
+    /// set. See deliverToChromium for why enabling it made things worse.
+    private func frontmostIsChromiumBased() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+        let pid = app.processIdentifier
+        if let known = chromiumCache[pid] { return known }
 
         var names: CFArray?
-        AXUIElementCopyAttributeNames(appElement, &names)
-        guard let list = names as? [String], list.contains("AXManualAccessibility") else {
-            chromiumOptIn.insert(pid)   // not Chromium-based; never ask again
-            return
-        }
-
-        let r = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        chromiumOptIn.insert(pid)
-        vpLog("[TC] AXManualAccessibility opt-in for pid \(pid) -> \(r.rawValue) (0 = ok)")
+        AXUIElementCopyAttributeNames(AXUIElementCreateApplication(pid), &names)
+        let isChromium = (names as? [String])?.contains("AXManualAccessibility") ?? false
+        chromiumCache[pid] = isChromium
+        vpLog("[TC] \(app.localizedName ?? "?") chromium/electron=\(isChromium)")
+        return isChromium
     }
 
     /// Focused-element candidates, from three sources.
@@ -408,7 +458,6 @@ class TerminalController: ObservableObject {
         // Source 2: App-level focused element (penetrates Catalyst UIKit bridge)
         if let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             let appElement = AXUIElementCreateApplication(pid)
-            enableChromiumAccessibility(on: appElement)
 
             var appFocused: AnyObject?
             if AXUIElementCopyAttributeValue(
