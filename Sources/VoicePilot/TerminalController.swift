@@ -261,14 +261,33 @@ class TerminalController: ObservableObject {
                 vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
                 return
             }
-            let script = """
+            // Select through AX, delete with a real key.
+            //
+            // Selection is not React state — the component owns the value, not the
+            // caret — so AX can set the selected range where it cannot set the value.
+            // One real Delete then removes the selection and fires the input event
+            // React does listen for.
+            if selectAllViaAccessibility() {
+                runAppleScript("""
+                tell application "System Events"
+                    key code 51
+                end tell
+                """)
+                vpLog("[TC] clearLine: AX select-all + Delete")
+                return
+            }
+
+            // Fallback: Cmd+A, with a gap before Delete. Sent back to back the delete
+            // arrives before the selection has been applied and removes a single
+            // character — the reported "deletes letter by letter".
+            runAppleScript("""
             tell application "System Events"
                 keystroke "a" using {command down}
+                delay 0.2
                 key code 51
             end tell
-            """
-            runAppleScript(script)
-            vpLog("[TC] clearLine: select-all + delete (text field confirmed)")
+            """)
+            vpLog("[TC] clearLine: Cmd+A (delayed) + Delete")
             return
         }
 
@@ -298,6 +317,34 @@ class TerminalController: ObservableObject {
     // The gate for the select-all path is focusedElementIsTextField() below, which
     // already existed: it matches on AX role (AXTextField, AXTextArea, AXComboBox,
     // AXSearchField), a stricter test than "has a string value".
+
+    /// Select the whole contents of the focused text field through Accessibility.
+    /// Returns false when no field is reachable or its selection is not settable.
+    private func selectAllViaAccessibility() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        for el in candidates {
+            if selectAllText(in: el) { return true }
+            if let d = findFocusedTextDescendant(in: el), selectAllText(in: d) { return true }
+        }
+        return false
+    }
+
+    private func selectAllText(in element: AXUIElement) -> Bool {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
+              let text = value as? String, !text.isEmpty else { return false }
+
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable)
+        guard settable.boolValue else { return false }
+
+        // UTF-16 length: AX ranges are UTF-16 offsets, so counting Characters would cut
+        // the selection short on any emoji or accented text.
+        var range = CFRange(location: 0, length: text.utf16.count)
+        guard let axRange = AXValueCreate(.cfRange, &range) else { return false }
+        return AXUIElementSetAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, axRange) == .success
+    }
 
     private var savedClipboard: String?
 
