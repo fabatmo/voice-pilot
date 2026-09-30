@@ -684,7 +684,10 @@ class TerminalController: ObservableObject {
 
         // Non-terminal frontmost — Any App mode.
         // Try AX first (clean, no clipboard side-effects).
-        if insertViaAccessibility(text) {
+        let axStarted = CFAbsoluteTimeGetCurrent()
+        let inserted = insertViaAccessibility(text)
+        vpLog("[TC] AX attempt took \(Int((CFAbsoluteTimeGetCurrent() - axStarted) * 1000)) ms")
+        if inserted {
             vpLog("[TC] AX insertion succeeded")
             return true
         }
@@ -1082,9 +1085,14 @@ class TerminalController: ObservableObject {
         }
         #endif
 
+        // Timed because the log's own timestamps are whole seconds, which cannot show
+        // how long a delivery holds the calling thread.
+        let started = CFAbsoluteTimeGetCurrent()
         if let script = NSAppleScript(source: source) {
             var error: NSDictionary?
             script.executeAndReturnError(&error)
+            let ms = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+            vpLog("[AS] \(ms) ms on \(Thread.isMainThread ? "main" : "background") thread, script of \(source.count) chars")
             if let error = error {
                 vpLog("[AS-ERROR] \(error)")
             }
