@@ -5,6 +5,33 @@ import ApplicationServices
 class TerminalController: ObservableObject {
     @Published var terminalOnly = false
 
+    /// Parked = deliver nothing, but keep recognising.
+    ///
+    /// This is deliberately NOT mute: mute calls SpeechEngine.stopListening, which
+    /// tears down the audio engine and discards the in-flight segment. Parking only
+    /// makes typeText return false, and the caller (AppDelegate.handleUtterance)
+    /// already routes an undelivered utterance into the panel buffer instead.
+    ///
+    /// Derived, never set directly — it is the OR of every hover source. Two sources
+    /// can overlap (pointer crossing from the transcript panel into the park zone),
+    /// and letting either one write `parked` would un-park while the other is still
+    /// held, dropping speech the user believes is safely buffered.
+    @Published private(set) var parked = false
+
+    enum ParkSource: String { case panel, zone }
+
+    private var parkSources: Set<ParkSource> = []
+
+    func setParked(_ on: Bool, source: ParkSource) {
+        if on { parkSources.insert(source) } else { parkSources.remove(source) }
+
+        let next = !parkSources.isEmpty
+        guard next != parked else { return }
+        parked = next
+        let held = parkSources.map(\.rawValue).sorted().joined(separator: "+")
+        vpLog("[TC] park \(next ? "ON" : "OFF") — held by [\(held)]")
+    }
+
     private let terminalApps: Set<String> = [
         "Terminal", "iTerm2", "kitty", "Alacritty",
         "WezTerm", "Ghostty", "Warp", "Hyper", "Rio"
@@ -15,6 +42,28 @@ class TerminalController: ObservableObject {
     private var frontmostIsTerminal: Bool {
         guard let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName else { return false }
         return terminalApps.contains(frontApp)
+    }
+
+    /// Non-terminal apps where Enter means "submit" and clearing the input is meaningful.
+    ///
+    /// Deliberately NOT merged into terminalApps: that set also decides how text is
+    /// typed (AppleScript keystroke vs Accessibility) and what "Terminal only" mode
+    /// admits, so listing an app here must not silently change how dictation reaches it.
+    ///
+    /// Runtime-extendable, so a new app needs no rebuild:
+    ///   defaults write com.fabianklainman.VoicePilot VoicePilotSubmitApps -array Orca Foo
+    static let submitAppsKey = "VoicePilotSubmitApps"
+    private static let defaultSubmitApps = ["Orca"]
+
+    private var extraSubmitApps: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: Self.submitAppsKey) ?? Self.defaultSubmitApps)
+    }
+
+    /// True when Send and Clear make sense in whatever is frontmost.
+    var isSubmitTarget: Bool {
+        if frontmostIsTerminal { return true }
+        guard let name = NSWorkspace.shared.frontmostApplication?.localizedName else { return false }
+        return extraSubmitApps.contains(name)
     }
 
     /// Find a terminal, activate it, paste text, and press Enter
@@ -157,7 +206,11 @@ class TerminalController: ObservableObject {
 
     /// Dictation submit — always targets a terminal. Does nothing if no terminal is frontmost.
     func pressEnter() {
-        if !frontmostIsTerminal { return }
+        guard isSubmitTarget else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[TC] pressEnter ignored — \(front) is not a submit target")
+            return
+        }
 
         let script = """
         tell application "System Events"
@@ -165,6 +218,365 @@ class TerminalController: ObservableObject {
         end tell
         """
         runAppleScript(script)
+    }
+
+    /// Wipes whatever is sitting on the terminal's current input line.
+    ///
+    /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,
+    /// which only kills from the cursor back to the start, so anything to the right of
+    /// the cursor would survive. Moving to end-of-line first makes it clear the whole
+    /// line there, and zsh's kill-whole-line is indifferent to the extra move.
+    func clearLine(charactersTyped: Int = 0) {
+        guard isSubmitTarget else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[TC] clearLine ignored — \(front) is not a submit target")
+            return
+        }
+
+        if frontmostIsTerminal {
+            let script = """
+            tell application "System Events"
+                key code 14 using {control down}
+                key code 32 using {control down}
+            end tell
+            """
+            runAppleScript(script)
+            vpLog("[TC] clearLine sent (ctrl-E then ctrl-U)")
+            return
+        }
+
+        // Chromium and Electron: AX for the decision, real keys for the action.
+        //
+        // Writing "" through AX has the same defect as inserting through it — React
+        // never sees an input event, so the field snaps back. Cmd+A then Delete does
+        // work, but would "work" anywhere, which is the danger: with focus outside a
+        // text box, select-all takes whatever the app calls everything — a message
+        // list, a canvas — and Delete destroys it. So the keys are sent only after AX
+        // confirms a text field actually holds focus. Reading that needs the app's real
+        // accessibility tree, hence the opt-in here; it is safe now that no mutation
+        // goes through AX for these apps.
+        if frontmostIsChromiumBased() {
+            enableChromiumAccessibilityForReading()
+            guard focusedElementIsTextField() else {
+                vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
+                return
+            }
+            // Select through AX, delete with a real key.
+            //
+            // Selection is not React state — the component owns the value, not the
+            // caret — so AX can set the selected range where it cannot set the value.
+            // One real Delete then removes the selection and fires the input event
+            // React does listen for.
+            if selectAllViaAccessibility() {
+                runAppleScript("""
+                tell application "System Events"
+                    key code 51
+                end tell
+                """)
+                vpLog("[TC] clearLine: AX select-all + Delete")
+                return
+            }
+
+            // Backspace, repeated, for exactly what we typed.
+            //
+            // Investigated 2026-09-30 rather than guessed at further. Orca's whole AX
+            // tree contains one editable element: 9x16 points, AXNumberOfCharacters 0,
+            // with its x-position tracking the caret. It captures keys through a hidden
+            // input and renders the text itself, so the text is not in the
+            // accessibility tree at all — no AX selection, value write or marker range
+            // can ever reach it, which is why four attempts through AX behaved
+            // erratically.
+            //
+            // That leaves the keyboard, and Delete is the one key observed to land
+            // every single time. VoicePilot knows exactly how many characters it put
+            // there, so it deletes that many. Deterministic, uses no modifier that an
+            // app can claim as a shortcut, and cannot escape the text field the way
+            // select-all can.
+            if tripleClickSelectAndDelete() {
+                vpLog("[TC] clearLine: triple-click select + Delete")
+                return
+            }
+
+            // Last resort: remove exactly what we typed. Only works when this app put
+            // the text there, so it is the fallback rather than the plan.
+            let count = charactersTyped
+            guard count > 0 else {
+                vpLog("[TC] clearLine: triple-click failed and nothing typed by us")
+                return
+            }
+            postBackspaces(count + 2)
+            vpLog("[TC] clearLine: \(count) backspaces")
+            return
+        }
+
+        // Native GUI app: empty the focused field through Accessibility. Safe here for
+        // the reason it is unsafe above — it only touches an element whose value is
+        // already a string, so a miss is a no-op rather than data loss.
+        if clearViaAccessibility() {
+            vpLog("[TC] clearLine: focused text field cleared via AX")
+        } else {
+            vpLog("[TC] clearLine: no writable text field found — nothing cleared")
+        }
+    }
+
+    private var chromiumReadOptIn: Set<pid_t> = []
+
+    /// Ask a Chromium/Electron app for its real accessibility tree so it can be READ.
+    /// Never used to enable AX writes for these apps — see typeText.
+    private func enableChromiumAccessibilityForReading() {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              !chromiumReadOptIn.contains(pid) else { return }
+        let r = AXUIElementSetAttributeValue(
+            AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        chromiumReadOptIn.insert(pid)
+        vpLog("[TC] AX read opt-in for pid \(pid) -> \(r.rawValue) (0 = ok)")
+    }
+
+    // The gate for the select-all path is focusedElementIsTextField() below, which
+    // already existed: it matches on AX role (AXTextField, AXTextArea, AXComboBox,
+    // AXSearchField), a stricter test than "has a string value".
+
+    /// Select an element's entire web-content text using Chromium's text markers.
+    ///
+    /// AXTextMarkerRangeForUIElement is a parameterized attribute Chromium answers with
+    /// the full marker range covering the element; assigning that to
+    /// AXSelectedTextMarkerRange selects it. Falls back to building the range from the
+    /// element's own AXStartTextMarker and AXEndTextMarker when the parameterized form
+    /// is refused.
+    private func selectAllViaTextMarkers(in element: AXUIElement) -> Bool {
+        var names: CFArray?
+        AXUIElementCopyAttributeNames(element, &names)
+        guard let attrs = names as? [String],
+              attrs.contains("AXSelectedTextMarkerRange") else { return false }
+
+        var markerRange: AnyObject?
+        let direct = AXUIElementCopyParameterizedAttributeValue(
+            element, "AXTextMarkerRangeForUIElement" as CFString, element, &markerRange)
+
+        if direct != .success || markerRange == nil {
+            var startRef: AnyObject?
+            var endRef: AnyObject?
+            guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startRef) == .success,
+                  AXUIElementCopyAttributeValue(element, "AXEndTextMarker" as CFString, &endRef) == .success,
+                  let start = startRef, let end = endRef else {
+                vpLog("[TC] text markers unavailable on this element")
+                return false
+            }
+            var params: AnyObject?
+            let pair = [start, end] as CFArray
+            guard AXUIElementCopyParameterizedAttributeValue(
+                    element, "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
+                    pair, &params) == .success, let built = params else {
+                vpLog("[TC] could not build a marker range from start/end")
+                return false
+            }
+            markerRange = built
+        }
+
+        guard let range = markerRange else { return false }
+        let set = AXUIElementSetAttributeValue(
+            element, "AXSelectedTextMarkerRange" as CFString, range)
+        vpLog("[TC] AX marker select-all -> \(set.rawValue) (0 = ok)")
+        return set == .success
+    }
+
+    /// Highlight the line with a triple-click, then delete it.
+    ///
+    /// The route the user uses by hand: select-all does not work in Orca at all, but
+    /// highlighting text and pressing delete does. Triple-click is that gesture, and
+    /// being a mouse selection it goes through the app's own text handling rather than
+    /// any keyboard shortcut it might have rebound.
+    ///
+    /// The click point comes from the one thing Orca's accessibility tree does report:
+    /// a 9x16 element whose position tracks the caret, and therefore sits inside the
+    /// text being edited.
+    private func tripleClickSelectAndDelete() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        guard let element = candidates.first else {
+            vpLog("[TC] triple-click: no focused element to aim at")
+            return false
+        }
+
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        guard let posRef = copyValue(element, kAXPositionAttribute as String),
+              let sizeRef = copyValue(element, kAXSizeAttribute as String),
+              AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else {
+            vpLog("[TC] triple-click: focused element reports no frame")
+            return false
+        }
+
+        let target = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+        vpLog("[TC] triple-click at \(target) (caret element \(size))")
+
+        let restore = CGEvent(source: nil)?.location ?? target
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            func mouse(_ type: CGEventType, _ clicks: Int64) {
+                guard let e = CGEvent(mouseEventSource: src, mouseType: type,
+                                      mouseCursorPosition: target, mouseButton: .left) else { return }
+                e.setIntegerValueField(.mouseEventClickState, value: clicks)
+                e.post(tap: .cghidEventTap)
+            }
+            CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
+                    mouseCursorPosition: target, mouseButton: .left)?.post(tap: .cghidEventTap)
+            usleep(60_000)
+            // Click state 1, 2, 3 in quick succession is what makes it a triple-click
+            // rather than three separate clicks.
+            for clicks in Int64(1)...3 {
+                mouse(.leftMouseDown, clicks)
+                usleep(18_000)
+                mouse(.leftMouseUp, clicks)
+                usleep(18_000)
+            }
+            usleep(150_000)
+            CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)?.post(tap: .cghidEventTap)
+            usleep(20_000)
+            CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)?.post(tap: .cghidEventTap)
+            usleep(80_000)
+            // Put the pointer back, so the button the user just clicked stays under it.
+            CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
+                    mouseCursorPosition: restore, mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+        return true
+    }
+
+    private func copyValue(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: AnyObject?
+        return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+    }
+
+    /// Send `count` Delete presses as real key events, off the main thread.
+    ///
+    /// 4ms apart: fast enough that a sentence clears in well under a second, slow
+    /// enough that a Chromium renderer does not drop events. Capped so a bad count can
+    /// never turn into a runaway.
+    private func postBackspaces(_ count: Int) {
+        let n = min(count, 800)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            for _ in 0..<n {
+                CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)?
+                    .post(tap: .cghidEventTap)
+                CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)?
+                    .post(tap: .cghidEventTap)
+                usleep(4_000)
+            }
+        }
+    }
+
+    /// Cmd+A, then Delete, as real key events.
+    ///
+    /// Off the main thread: the small gaps between press and release are what make the
+    /// modifier stick, and blocking main here would stall delivery of the next utterance.
+    private func postChord() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            func post(_ key: CGKeyCode, down: Bool, _ flags: CGEventFlags) {
+                if let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) {
+                    e.flags = flags
+                    e.post(tap: .cghidEventTap)
+                }
+                usleep(25_000)
+            }
+
+            // Press Command for real, rather than only tagging 'a' with .maskCommand.
+            //
+            // Setting the flag on the key event alone leaves the system-wide modifier
+            // state saying Command is up, and an app that reads that state — as
+            // Chromium does — sees a plain "a". That is why both AppleScript's
+            // `keystroke "a" using {command down}` and a flag-only CGEvent failed here
+            // while the unmodified Delete that followed always landed.
+            post(55, down: true, .maskCommand)              // 55 = Command
+            post(0,  down: true, .maskCommand)              // 0  = 'a'
+            post(0,  down: false, .maskCommand)
+            post(55, down: false, [])
+            usleep(150_000)                                 // let the selection settle
+            post(51, down: true, [])                        // 51 = Delete
+            post(51, down: false, [])
+        }
+    }
+
+    /// Report exactly what AX can see of the focused element, so the reason select-all
+    /// failed is a fact in the log rather than a guess.
+    private func logClearDiagnostics() {
+        let (candidates, sysResult) = focusedTextCandidates()
+        vpLog("[TC] clearDiag: candidates=\(candidates.count) sysResult=\(sysResult.rawValue)")
+
+        func report(_ label: String, _ el: AXUIElement) {
+            var roleV: AnyObject?
+            AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleV)
+            var valueV: AnyObject?
+            let valueOK = AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &valueV) == .success
+            var rangeSettable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(el, kAXSelectedTextRangeAttribute as CFString, &rangeSettable)
+            var valueSettable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &valueSettable)
+            var names: CFArray?
+            AXUIElementCopyAttributeNames(el, &names)
+            vpLog("[TC] clearDiag \(label): role=\(roleV as? String ?? "?") "
+                  + "valueReadable=\(valueOK) valueIsString=\(valueV as? String != nil) "
+                  + "len=\((valueV as? String)?.utf16.count ?? -1) "
+                  + "rangeSettable=\(rangeSettable.boolValue) valueSettable=\(valueSettable.boolValue) "
+                  + "attrs=[\((names as? [String] ?? []).joined(separator: " "))]")
+        }
+
+        for (i, el) in candidates.enumerated() {
+            report("cand\(i)", el)
+            if let d = findFocusedTextDescendant(in: el) { report("cand\(i).descendant", d) }
+        }
+    }
+
+    /// Select the whole contents of the focused text field through Accessibility.
+    /// Returns false when no field is reachable or its selection is not settable.
+    private func selectAllViaAccessibility() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        for el in candidates {
+            if selectAllText(in: el) { return true }
+            if let d = findFocusedTextDescendant(in: el), selectAllText(in: d) { return true }
+        }
+        return false
+    }
+
+    private func selectAllText(in element: AXUIElement) -> Bool {
+        // Text markers are NOT used, though Orca advertises them. Setting
+        // AXSelectedTextMarkerRange returns success and changes nothing Chromium acts
+        // on — measured 2026-09-30: after it, Delete stopped removing even the single
+        // character it managed before, so the marker selection actively displaced a
+        // working caret. selectAllViaTextMarkers is kept for reference but not called.
+
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable)
+        guard settable.boolValue else { return false }
+
+        // Length comes from AXNumberOfCharacters, not from AXValue.
+        //
+        // Chromium contenteditables — Orca's input is one — keep their text in the DOM
+        // and report AXValue as the empty string. Measured 2026-09-30: role=AXTextField,
+        // valueReadable=true, valueIsString=true, len=0, with text plainly on screen.
+        // Requiring a non-empty AXValue made select-all bail out every time, leaving
+        // only the Delete to land, which is exactly the reported one-character-at-a-time
+        // behaviour. AXNumberOfCharacters reports the real count.
+        var count = 0
+        var countRef: AnyObject?
+        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &countRef) == .success,
+           let n = countRef as? Int {
+            count = n
+        } else if var valueRef: AnyObject? = nil,
+                  AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+                  let text = valueRef as? String {
+            count = text.utf16.count
+        }
+        guard count > 0 else { return false }
+
+        // AX ranges are UTF-16 offsets, which is what AXNumberOfCharacters counts.
+        var range = CFRange(location: 0, length: count)
+        guard let axRange = AXValueCreate(.cfRange, &range) else { return false }
+        let ok = AXUIElementSetAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, axRange) == .success
+        if ok { vpLog("[TC] AX selected \(count) chars for clearing") }
+        return ok
     }
 
     private var savedClipboard: String?
@@ -227,6 +639,13 @@ class TerminalController: ObservableObject {
         let frontApp = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         vpLog("[TC] typeText called, terminalOnly=\(terminalOnly) frontmost=\(frontApp) isTerminal=\(frontmostIsTerminal)")
 
+        // Pointer is resting on the panel. Returning false is the whole mechanism:
+        // handleUtterance appends to the panel buffer instead, so nothing is lost.
+        if parked {
+            vpLog("[TC] PARKED: mouse over panel, buffering '\(text.prefix(40))'")
+            return false
+        }
+
         // In Terminal-only mode, refuse to type when frontmost isn't a terminal.
         if terminalOnly && !frontmostIsTerminal {
             vpLog("[TC] BLOCKED: terminalOnly=true but frontmost is not terminal")
@@ -245,6 +664,24 @@ class TerminalController: ObservableObject {
             return true
         }
 
+        // Chromium and Electron apps: skip AX entirely and paste.
+        //
+        // Not because AX fails there — since the AXManualAccessibility opt-in it
+        // "succeeds" every time. That was the bug. These apps render React-controlled
+        // inputs, and writing a value through AX never fires the JS input events the
+        // component listens for, so React overwrites it on the next render and nothing
+        // reaches the screen. A synthetic Cmd+V goes through real key events, which do
+        // fire those handlers.
+        //
+        // Measured in Orca: every insertion logged "AX insertion succeeded" and typed
+        // nothing, while the same app worked all day on the clipboard path before the
+        // opt-in was added.
+        if frontmostIsChromiumBased() {
+            vpLog("[TC] chromium/electron — clipboard paste (AX writes never reach React)")
+            pasteText(text)
+            return true
+        }
+
         // Non-terminal frontmost — Any App mode.
         // Try AX first (clean, no clipboard side-effects).
         if insertViaAccessibility(text) {
@@ -259,13 +696,33 @@ class TerminalController: ObservableObject {
         return true
     }
 
-    /// Insert text at the cursor of the focused text field via the Accessibility API.
-    /// Queries focused elements from three sources — system-wide, app-level, and focused-window —
-    /// then tries direct write and descendant walk on each. The multi-source approach is needed
-    /// because Catalyst/UIKit apps (WhatsApp) and Chromium browsers return different elements
-    /// depending on the query level.
-    /// Returns false only if no writable text element is reachable (Finder, video player, no focus).
-    private func insertViaAccessibility(_ text: String) -> Bool {
+    private var chromiumCache: [pid_t: Bool] = [:]
+
+    /// True for Chromium- and Electron-based apps.
+    ///
+    /// AXManualAccessibility is the attribute those apps expose so assistive clients can
+    /// ask for a real accessibility tree; nothing else advertises it, which makes its
+    /// presence a reliable detector. Detection only — the attribute is deliberately NOT
+    /// set. See deliverToChromium for why enabling it made things worse.
+    private func frontmostIsChromiumBased() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+        let pid = app.processIdentifier
+        if let known = chromiumCache[pid] { return known }
+
+        var names: CFArray?
+        AXUIElementCopyAttributeNames(AXUIElementCreateApplication(pid), &names)
+        let isChromium = (names as? [String])?.contains("AXManualAccessibility") ?? false
+        chromiumCache[pid] = isChromium
+        vpLog("[TC] \(app.localizedName ?? "?") chromium/electron=\(isChromium)")
+        return isChromium
+    }
+
+    /// Focused-element candidates, from three sources.
+    ///
+    /// The multi-source approach is needed because Catalyst/UIKit apps (WhatsApp) and
+    /// Chromium browsers return different elements depending on the query level. Shared
+    /// by insertion and clearing so both agree on what "the focused field" means.
+    private func focusedTextCandidates() -> ([AXUIElement], AXError) {
         var candidates: [AXUIElement] = []
 
         // Source 1: System-wide focused element (works for Cocoa-native apps)
@@ -303,6 +760,45 @@ class TerminalController: ObservableObject {
                 }
             }
         }
+
+        return (candidates, sysResult)
+    }
+
+    /// Empty the focused text field via the Accessibility API.
+    ///
+    /// Only writes to an element whose value already reads as a string, so pointing this
+    /// at a list, canvas or web view is a no-op rather than a deletion. That restraint is
+    /// the entire reason this exists instead of Cmd+A followed by Delete.
+    private func clearViaAccessibility() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        guard !candidates.isEmpty else { return false }
+
+        for el in candidates where clearText(in: el) { return true }
+        for el in candidates {
+            if let desc = findFocusedTextDescendant(in: el), clearText(in: desc) { return true }
+        }
+        return false
+    }
+
+    private func clearText(in element: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        guard settable.boolValue else { return false }
+
+        // Refuse anything whose current value is not a string — that is what keeps this
+        // away from non-text elements that happen to expose a settable value.
+        var current: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &current) == .success,
+              current as? String != nil else { return false }
+
+        return AXUIElementSetAttributeValue(
+            element, kAXValueAttribute as CFString, "" as CFTypeRef) == .success
+    }
+
+    /// Insert text at the cursor of the focused text field via the Accessibility API.
+    /// Returns false only if no writable text element is reachable (Finder, video player, no focus).
+    private func insertViaAccessibility(_ text: String) -> Bool {
+        let (candidates, sysResult) = focusedTextCandidates()
 
         guard !candidates.isEmpty else {
             axDiagDump(reason: "no-focused-element", element: nil, getResult: sysResult)

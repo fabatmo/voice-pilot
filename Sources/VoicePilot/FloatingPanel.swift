@@ -8,7 +8,10 @@ class NonActivatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
+// HoverReportingView and HoverParkDebouncer live in HoverPark.swift — shared with
+// the standalone park zone.
+
+class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, WindowRevealing {
     var window: NSWindow?
     private var speechEngine: SpeechEngine
     private var terminalController: TerminalController
@@ -32,8 +35,20 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         )
         .preferredColorScheme(.dark)
 
-        let hostingView = NSHostingView(rootView: view)
         let miniSize = NSRect(x: 0, y: 0, width: 310, height: 90)
+
+        // Hover container wraps the SwiftUI host so enter/exit covers the whole panel,
+        // including the area under the transparent titlebar (.fullSizeContentView).
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = miniSize
+        hostingView.autoresizingMask = [.width, .height]
+
+        let hoverView = HoverReportingView(frame: miniSize)
+        hoverView.autoresizingMask = [.width, .height]
+        hoverView.addSubview(hostingView)
+        hoverView.onHoverChange = { [weak self] inside in
+            self?.setHover(inside)
+        }
 
         let panel = NonActivatingPanel(
             contentRect: miniSize,
@@ -44,7 +59,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
         panel.title = "Voice Pilot"
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
-        panel.contentView = hostingView
+        panel.contentView = hoverView
         panel.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)
         panel.isOpaque = true
         panel.hasShadow = true
@@ -65,6 +80,51 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate {
 
         panel.orderFront(nil)
         self.window = panel
+    }
+
+    /// Re-asserts the transcript panel after a wake or display change. Same exposure as
+    /// the park zone: a frame left on a departed display cannot be raised into view.
+    func recallToPointer() {
+        guard let win = window else { return }
+        recallWindowToPointer(win, label: "transcript panel", inset: NSPoint(x: 40, y: 200))
+    }
+
+    func reveal() {
+        guard let win = window else { return }
+        ensureWindowOnScreen(win, label: "transcript panel")
+        win.level = .floating
+        win.orderFront(nil)
+        vpLog("[Panel] revealed at \(win.frame)")
+    }
+
+    // MARK: - Hover parking
+
+    /// Whether resting on the transcript panel parks dictation.
+    ///
+    /// Defaults OFF. The panel is where the pointer naturally comes to rest — measured
+    /// on the first day, and confirmed 2026-09-29 when 4 of 13 utterances went to the
+    /// buffer instead of the terminal, every one of them held by [panel] while the user
+    /// believed the app had stopped working. Silent buffering is indistinguishable from
+    /// a broken app, so the accidental target is off and the deliberate one (the
+    /// standalone park zone) is the only one armed. Re-enable from the menu.
+    static let panelHoverKey = "parkOnPanelHover"
+
+    static var panelHoverEnabled: Bool {
+        UserDefaults.standard.object(forKey: panelHoverKey) as? Bool ?? false
+    }
+
+    private lazy var parkDebouncer = HoverParkDebouncer { [weak self] parked in
+        self?.terminalController.setParked(parked, source: .panel)
+    }
+
+    private func setHover(_ inside: Bool) {
+        guard Self.panelHoverEnabled else {
+            // Release any hold that predates the setting being turned off.
+            parkDebouncer.cancel()
+            terminalController.setParked(false, source: .panel)
+            return
+        }
+        parkDebouncer.hoverChanged(inside)
     }
 
     // Green button (zoom) toggles mini/full
@@ -101,7 +161,8 @@ struct MainView: View {
             if panelController.isMini {
                 MiniContent(
                     speechEngine: speechEngine,
-                    dictationManager: dictationManager
+                    dictationManager: dictationManager,
+                    terminalController: terminalController
                 )
             } else {
                 DictationContent(
@@ -121,6 +182,14 @@ struct MainView: View {
 struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var dictationManager: DictationManager
+    @ObservedObject var terminalController: TerminalController
+
+    /// Amber while parked, so the state is never invisible — the pointer resting here
+    /// silently stopping delivery would otherwise look like a broken app.
+    private var statusColor: Color {
+        if terminalController.parked { return .orange }
+        return speechEngine.isListening ? .green : .red
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -128,7 +197,7 @@ struct MiniContent: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(speechEngine.isListening ? Color.green : Color.red)
+                    .fill(statusColor)
                     .frame(width: 7, height: 7)
 
                 if !speechEngine.currentTranscript.isEmpty {
@@ -136,6 +205,10 @@ struct MiniContent: View {
                         .font(.system(size: 12))
                         .foregroundColor(.white)
                         .lineLimit(2)
+                } else if terminalController.parked {
+                    Text("Parked — buffering, not typing")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
                 } else {
                     Text(speechEngine.isListening ? "Dictating..." : "Paused")
                         .font(.system(size: 12))

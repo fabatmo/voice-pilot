@@ -18,6 +18,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var terminalController: TerminalController?
     var floatingPanel: FloatingPanelController?
     var dictationManager: DictationManager?
+    var parkZone: ParkZoneController?
+    var windowKeeper: WindowKeeper?
 
     private var dictationCurrentText = ""
     private var dictationSuppressUntil: Date = .distantPast
@@ -43,8 +45,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dictationManager: dictationManager!
         )
 
+        parkZone = ParkZoneController(terminalController: terminalController!)
+        parkZone?.onSend = { [weak self] in
+            self?.submitDictation()
+        }
+        parkZone?.onClear = { [weak self] in
+            self?.clearDictation()
+        }
+
+        // Recovers both floating windows after screen wake and display changes. Run once
+        // now as well: launching while a display is still asleep (login, or a relaunch
+        // after an engine switch) can restore a frame onto a screen that is not there.
+        windowKeeper = WindowKeeper(targets: [floatingPanel!, parkZone!])
+        windowKeeper?.revealNow()
+
+        dictationManager?.onRecall = { [weak self] in
+            self?.windowKeeper?.recallNow()
+        }
+
+        windowKeeper?.onWake = { [weak self] in
+            self?.restartSpeechAfterWake()
+        }
+
+        // Ops escape hatch, same pattern as VOICEPILOT_ENGINE: launch with
+        // VOICEPILOT_RECALL=1 to drag the windows onto the pointer's display, for when
+        // they are stranded on a monitor that is off or not being looked at.
+        if ProcessInfo.processInfo.environment["VOICEPILOT_RECALL"] == "1" {
+            vpLog("[App] VOICEPILOT_RECALL=1 — recalling windows to the pointer")
+            windowKeeper?.recallNow()
+        }
+
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
+            parkZone: parkZone!,
+            onBringToFront: { [weak self] in self?.windowKeeper?.recallNow() },
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
                 self?.floatingPanel?.window?.makeKeyAndOrderFront(nil)
@@ -61,6 +95,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         terminalController?.saveClipboard()
         dictationManager?.start()
+    }
+
+    /// Rebuild the speech pipeline after the machine wakes.
+    ///
+    /// AVAudioEngine stops when the machine sleeps and does not come back on its own.
+    /// Nothing else notices: the process stays alive, the windows still respond to
+    /// hover, the menu still opens — and not one word is heard, which reads as
+    /// "VoicePilot is off". Observed 2026-09-29: zero recognizer output for the eleven
+    /// hours after an overnight sleep, while park events kept firing normally.
+    ///
+    /// Restarts unconditionally rather than probing engine health first: on wake nobody
+    /// is mid-sentence, so the ~1s gap costs nothing, and a health check that returns a
+    /// false positive would leave the user silently deaf again for hours.
+    private func restartSpeechAfterWake() {
+        guard let engine = speechEngine else { return }
+
+        // isListening false means the user muted it deliberately. Restarting would
+        // un-mute behind their back.
+        guard engine.isListening else {
+            vpLog("[App] wake: muted, leaving speech alone")
+            return
+        }
+
+        vpLog("[App] wake: restarting the speech pipeline")
+        engine.stopListening()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            engine.startListening()
+        }
     }
 
     private func handleUtterance(_ text: String) {
@@ -81,8 +143,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Wipes the terminal's input line and the app's view of it — for when dictation
+    /// has put gibberish at the prompt.
+    private func clearDictation() {
+        // Same reasoning as submit: while parked nothing was typed, so there is no
+        // gibberish on the line to remove, and dictationManager.clear() below would
+        // destroy the buffer parking exists to protect.
+        if terminalController?.parked == true {
+            vpLog("[App] clear ignored — parked")
+            return
+        }
+
+        guard terminalController?.isSubmitTarget == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] clear ignored — frontmost is \(front), not a submit target")
+            return
+        }
+
+        // Pass what we typed: in apps that hide their text from accessibility, the only
+        // way to clear it is to remove exactly as many characters as we added.
+        terminalController?.clearLine(charactersTyped: dictationCurrentText.count)
+
+        // Reset our own view of the line as well. dictationCurrentText decides whether
+        // the next utterance gets a leading space, so leaving it set would open the
+        // freshly cleared prompt with a stray space.
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        vpLog("[App] clear: terminal line and dictation state reset")
+    }
+
     private func submitDictation() {
-        guard terminalController?.isTerminalFrontmost == true else { return }
+        // While parked, the panel buffer holds text that was never typed. Submitting
+        // would clear() it below and lose it — the exact truncation parking exists to
+        // avoid — and would submit a prompt missing everything spoken while parked.
+        if terminalController?.parked == true {
+            vpLog("[App] submitDictation ignored — parked")
+            return
+        }
+
+        // Enter only means "submit" in a terminal or a listed app. Logged rather than
+        // silent because the Send button makes this reachable by a deliberate click, and
+        // a button that does nothing with no trace is indistinguishable from a broken one.
+        guard terminalController?.isSubmitTarget == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] submitDictation ignored — frontmost is \(front), not a submit target")
+            return
+        }
+
+        // Text buffered while parked was never typed. Clearing it below would discard
+        // it, so say so — flushing it on send needs the buffer scoped to the park
+        // session, otherwise a long-stale backlog would be dumped into the prompt.
+        if let buffered = dictationManager?.accumulatedText, !buffered.isEmpty {
+            vpLog("[App] submitDictation discarding \(buffered.count) buffered chars")
+        }
 
         dictationSuppressUntil = Date().addingTimeInterval(3.0)
         dictationCurrentText = ""

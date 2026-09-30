@@ -44,6 +44,12 @@ class DictationManager: ObservableObject {
     /// Name kept for historical compatibility.
     var onMouseButton: (() -> Void)?
 
+    /// Global Ctrl+Shift+P — gather the floating windows onto the pointer's display.
+    /// A real hotkey rather than a menu item: a status-item menu only handles its key
+    /// equivalents while it is open, so the menu entry cannot rescue a window the user
+    /// has already lost track of.
+    var onRecall: (() -> Void)?
+
     func start() {
         isActive = true
         activeFlag.withLock { $0 = true }
@@ -134,6 +140,26 @@ class DictationManager: ObservableObject {
                         manager.onMouseButton?()
                     }
                     return nil // consume
+                }
+
+                // Ctrl+Shift+P — consume and recall the floating windows. Not debounced
+                // with the submit timer: recall is idempotent and must never be dropped
+                // because a submit happened to precede it.
+                if type == .keyDown {
+                    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+                    let flags = event.flags
+                    // Any control+shift chord is a candidate hotkey; log what actually
+                    // arrives so a hotkey that does not fire can be diagnosed from the
+                    // log rather than guessed at.
+                    if flags.contains(.maskControl) && flags.contains(.maskShift) {
+                        vpLog("[DM] ctrl+shift keyDown keyCode=\(keyCode) flags=\(flags.rawValue)")
+                    }
+                    if keyCode == 35 && flags.contains(.maskControl) && flags.contains(.maskShift) {
+                        DispatchQueue.main.async {
+                            manager.onRecall?()
+                        }
+                        return nil // consume
+                    }
                 }
 
                 // Ctrl+Shift+S — consume and submit (debounced)
