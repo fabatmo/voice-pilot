@@ -226,7 +226,7 @@ class TerminalController: ObservableObject {
     /// which only kills from the cursor back to the start, so anything to the right of
     /// the cursor would survive. Moving to end-of-line first makes it clear the whole
     /// line there, and zsh's kill-whole-line is indifferent to the extra move.
-    func clearLine() {
+    func clearLine(charactersTyped: Int = 0) {
         guard isSubmitTarget else {
             let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
             vpLog("[TC] clearLine ignored — \(front) is not a submit target")
@@ -277,17 +277,35 @@ class TerminalController: ObservableObject {
                 return
             }
 
-            // Fallback: Cmd+A, with a gap before Delete. Sent back to back the delete
-            // arrives before the selection has been applied and removes a single
-            // character — the reported "deletes letter by letter".
-            runAppleScript("""
-            tell application "System Events"
-                keystroke "a" using {command down}
-                delay 0.2
-                key code 51
-            end tell
-            """)
-            vpLog("[TC] clearLine: Cmd+A (delayed) + Delete")
+            // Backspace, repeated, for exactly what we typed.
+            //
+            // Investigated 2026-09-30 rather than guessed at further. Orca's whole AX
+            // tree contains one editable element: 9x16 points, AXNumberOfCharacters 0,
+            // with its x-position tracking the caret. It captures keys through a hidden
+            // input and renders the text itself, so the text is not in the
+            // accessibility tree at all — no AX selection, value write or marker range
+            // can ever reach it, which is why four attempts through AX behaved
+            // erratically.
+            //
+            // That leaves the keyboard, and Delete is the one key observed to land
+            // every single time. VoicePilot knows exactly how many characters it put
+            // there, so it deletes that many. Deterministic, uses no modifier that an
+            // app can claim as a shortcut, and cannot escape the text field the way
+            // select-all can.
+            if tripleClickSelectAndDelete() {
+                vpLog("[TC] clearLine: triple-click select + Delete")
+                return
+            }
+
+            // Last resort: remove exactly what we typed. Only works when this app put
+            // the text there, so it is the fallback rather than the plan.
+            let count = charactersTyped
+            guard count > 0 else {
+                vpLog("[TC] clearLine: triple-click failed and nothing typed by us")
+                return
+            }
+            postBackspaces(count + 2)
+            vpLog("[TC] clearLine: \(count) backspaces")
             return
         }
 
@@ -318,6 +336,198 @@ class TerminalController: ObservableObject {
     // already existed: it matches on AX role (AXTextField, AXTextArea, AXComboBox,
     // AXSearchField), a stricter test than "has a string value".
 
+    /// Select an element's entire web-content text using Chromium's text markers.
+    ///
+    /// AXTextMarkerRangeForUIElement is a parameterized attribute Chromium answers with
+    /// the full marker range covering the element; assigning that to
+    /// AXSelectedTextMarkerRange selects it. Falls back to building the range from the
+    /// element's own AXStartTextMarker and AXEndTextMarker when the parameterized form
+    /// is refused.
+    private func selectAllViaTextMarkers(in element: AXUIElement) -> Bool {
+        var names: CFArray?
+        AXUIElementCopyAttributeNames(element, &names)
+        guard let attrs = names as? [String],
+              attrs.contains("AXSelectedTextMarkerRange") else { return false }
+
+        var markerRange: AnyObject?
+        let direct = AXUIElementCopyParameterizedAttributeValue(
+            element, "AXTextMarkerRangeForUIElement" as CFString, element, &markerRange)
+
+        if direct != .success || markerRange == nil {
+            var startRef: AnyObject?
+            var endRef: AnyObject?
+            guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startRef) == .success,
+                  AXUIElementCopyAttributeValue(element, "AXEndTextMarker" as CFString, &endRef) == .success,
+                  let start = startRef, let end = endRef else {
+                vpLog("[TC] text markers unavailable on this element")
+                return false
+            }
+            var params: AnyObject?
+            let pair = [start, end] as CFArray
+            guard AXUIElementCopyParameterizedAttributeValue(
+                    element, "AXTextMarkerRangeForUnorderedTextMarkers" as CFString,
+                    pair, &params) == .success, let built = params else {
+                vpLog("[TC] could not build a marker range from start/end")
+                return false
+            }
+            markerRange = built
+        }
+
+        guard let range = markerRange else { return false }
+        let set = AXUIElementSetAttributeValue(
+            element, "AXSelectedTextMarkerRange" as CFString, range)
+        vpLog("[TC] AX marker select-all -> \(set.rawValue) (0 = ok)")
+        return set == .success
+    }
+
+    /// Highlight the line with a triple-click, then delete it.
+    ///
+    /// The route the user uses by hand: select-all does not work in Orca at all, but
+    /// highlighting text and pressing delete does. Triple-click is that gesture, and
+    /// being a mouse selection it goes through the app's own text handling rather than
+    /// any keyboard shortcut it might have rebound.
+    ///
+    /// The click point comes from the one thing Orca's accessibility tree does report:
+    /// a 9x16 element whose position tracks the caret, and therefore sits inside the
+    /// text being edited.
+    private func tripleClickSelectAndDelete() -> Bool {
+        let (candidates, _) = focusedTextCandidates()
+        guard let element = candidates.first else {
+            vpLog("[TC] triple-click: no focused element to aim at")
+            return false
+        }
+
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        guard let posRef = copyValue(element, kAXPositionAttribute as String),
+              let sizeRef = copyValue(element, kAXSizeAttribute as String),
+              AXValueGetValue(posRef as! AXValue, .cgPoint, &pos),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else {
+            vpLog("[TC] triple-click: focused element reports no frame")
+            return false
+        }
+
+        let target = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+        vpLog("[TC] triple-click at \(target) (caret element \(size))")
+
+        let restore = CGEvent(source: nil)?.location ?? target
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            func mouse(_ type: CGEventType, _ clicks: Int64) {
+                guard let e = CGEvent(mouseEventSource: src, mouseType: type,
+                                      mouseCursorPosition: target, mouseButton: .left) else { return }
+                e.setIntegerValueField(.mouseEventClickState, value: clicks)
+                e.post(tap: .cghidEventTap)
+            }
+            CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
+                    mouseCursorPosition: target, mouseButton: .left)?.post(tap: .cghidEventTap)
+            usleep(60_000)
+            // Click state 1, 2, 3 in quick succession is what makes it a triple-click
+            // rather than three separate clicks.
+            for clicks in Int64(1)...3 {
+                mouse(.leftMouseDown, clicks)
+                usleep(18_000)
+                mouse(.leftMouseUp, clicks)
+                usleep(18_000)
+            }
+            usleep(150_000)
+            CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)?.post(tap: .cghidEventTap)
+            usleep(20_000)
+            CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)?.post(tap: .cghidEventTap)
+            usleep(80_000)
+            // Put the pointer back, so the button the user just clicked stays under it.
+            CGEvent(mouseEventSource: src, mouseType: .mouseMoved,
+                    mouseCursorPosition: restore, mouseButton: .left)?.post(tap: .cghidEventTap)
+        }
+        return true
+    }
+
+    private func copyValue(_ element: AXUIElement, _ name: String) -> AnyObject? {
+        var value: AnyObject?
+        return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+    }
+
+    /// Send `count` Delete presses as real key events, off the main thread.
+    ///
+    /// 4ms apart: fast enough that a sentence clears in well under a second, slow
+    /// enough that a Chromium renderer does not drop events. Capped so a bad count can
+    /// never turn into a runaway.
+    private func postBackspaces(_ count: Int) {
+        let n = min(count, 800)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            for _ in 0..<n {
+                CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: true)?
+                    .post(tap: .cghidEventTap)
+                CGEvent(keyboardEventSource: src, virtualKey: 51, keyDown: false)?
+                    .post(tap: .cghidEventTap)
+                usleep(4_000)
+            }
+        }
+    }
+
+    /// Cmd+A, then Delete, as real key events.
+    ///
+    /// Off the main thread: the small gaps between press and release are what make the
+    /// modifier stick, and blocking main here would stall delivery of the next utterance.
+    private func postChord() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let src = CGEventSource(stateID: .combinedSessionState)
+            func post(_ key: CGKeyCode, down: Bool, _ flags: CGEventFlags) {
+                if let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) {
+                    e.flags = flags
+                    e.post(tap: .cghidEventTap)
+                }
+                usleep(25_000)
+            }
+
+            // Press Command for real, rather than only tagging 'a' with .maskCommand.
+            //
+            // Setting the flag on the key event alone leaves the system-wide modifier
+            // state saying Command is up, and an app that reads that state — as
+            // Chromium does — sees a plain "a". That is why both AppleScript's
+            // `keystroke "a" using {command down}` and a flag-only CGEvent failed here
+            // while the unmodified Delete that followed always landed.
+            post(55, down: true, .maskCommand)              // 55 = Command
+            post(0,  down: true, .maskCommand)              // 0  = 'a'
+            post(0,  down: false, .maskCommand)
+            post(55, down: false, [])
+            usleep(150_000)                                 // let the selection settle
+            post(51, down: true, [])                        // 51 = Delete
+            post(51, down: false, [])
+        }
+    }
+
+    /// Report exactly what AX can see of the focused element, so the reason select-all
+    /// failed is a fact in the log rather than a guess.
+    private func logClearDiagnostics() {
+        let (candidates, sysResult) = focusedTextCandidates()
+        vpLog("[TC] clearDiag: candidates=\(candidates.count) sysResult=\(sysResult.rawValue)")
+
+        func report(_ label: String, _ el: AXUIElement) {
+            var roleV: AnyObject?
+            AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleV)
+            var valueV: AnyObject?
+            let valueOK = AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &valueV) == .success
+            var rangeSettable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(el, kAXSelectedTextRangeAttribute as CFString, &rangeSettable)
+            var valueSettable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &valueSettable)
+            var names: CFArray?
+            AXUIElementCopyAttributeNames(el, &names)
+            vpLog("[TC] clearDiag \(label): role=\(roleV as? String ?? "?") "
+                  + "valueReadable=\(valueOK) valueIsString=\(valueV as? String != nil) "
+                  + "len=\((valueV as? String)?.utf16.count ?? -1) "
+                  + "rangeSettable=\(rangeSettable.boolValue) valueSettable=\(valueSettable.boolValue) "
+                  + "attrs=[\((names as? [String] ?? []).joined(separator: " "))]")
+        }
+
+        for (i, el) in candidates.enumerated() {
+            report("cand\(i)", el)
+            if let d = findFocusedTextDescendant(in: el) { report("cand\(i).descendant", d) }
+        }
+    }
+
     /// Select the whole contents of the focused text field through Accessibility.
     /// Returns false when no field is reachable or its selection is not settable.
     private func selectAllViaAccessibility() -> Bool {
@@ -330,20 +540,43 @@ class TerminalController: ObservableObject {
     }
 
     private func selectAllText(in element: AXUIElement) -> Bool {
-        var value: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success,
-              let text = value as? String, !text.isEmpty else { return false }
+        // Text markers are NOT used, though Orca advertises them. Setting
+        // AXSelectedTextMarkerRange returns success and changes nothing Chromium acts
+        // on — measured 2026-09-30: after it, Delete stopped removing even the single
+        // character it managed before, so the marker selection actively displaced a
+        // working caret. selectAllViaTextMarkers is kept for reference but not called.
 
         var settable: DarwinBoolean = false
         AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &settable)
         guard settable.boolValue else { return false }
 
-        // UTF-16 length: AX ranges are UTF-16 offsets, so counting Characters would cut
-        // the selection short on any emoji or accented text.
-        var range = CFRange(location: 0, length: text.utf16.count)
+        // Length comes from AXNumberOfCharacters, not from AXValue.
+        //
+        // Chromium contenteditables — Orca's input is one — keep their text in the DOM
+        // and report AXValue as the empty string. Measured 2026-09-30: role=AXTextField,
+        // valueReadable=true, valueIsString=true, len=0, with text plainly on screen.
+        // Requiring a non-empty AXValue made select-all bail out every time, leaving
+        // only the Delete to land, which is exactly the reported one-character-at-a-time
+        // behaviour. AXNumberOfCharacters reports the real count.
+        var count = 0
+        var countRef: AnyObject?
+        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &countRef) == .success,
+           let n = countRef as? Int {
+            count = n
+        } else if var valueRef: AnyObject? = nil,
+                  AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+                  let text = valueRef as? String {
+            count = text.utf16.count
+        }
+        guard count > 0 else { return false }
+
+        // AX ranges are UTF-16 offsets, which is what AXNumberOfCharacters counts.
+        var range = CFRange(location: 0, length: count)
         guard let axRange = AXValueCreate(.cfRange, &range) else { return false }
-        return AXUIElementSetAttributeValue(
+        let ok = AXUIElementSetAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, axRange) == .success
+        if ok { vpLog("[TC] AX selected \(count) chars for clearing") }
+        return ok
     }
 
     private var savedClipboard: String?

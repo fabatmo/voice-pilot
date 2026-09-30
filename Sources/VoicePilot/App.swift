@@ -160,7 +160,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        terminalController?.clearLine()
+        // Pass what we typed: in apps that hide their text from accessibility, the only
+        // way to clear it is to remove exactly as many characters as we added.
+        terminalController?.clearLine(charactersTyped: dictationCurrentText.count)
 
         // Reset our own view of the line as well. dictationCurrentText decides whether
         // the next utterance gets a leading space, so leaving it set would open the
