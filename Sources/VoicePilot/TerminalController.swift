@@ -32,6 +32,22 @@ class TerminalController: ObservableObject {
         vpLog("[TC] park \(next ? "ON" : "OFF") — held by [\(held)]")
     }
 
+    /// How long one accessibility call may wait for the app it is addressed to.
+    ///
+    /// The system default is 1.5 s per call, and finding the focused field takes three
+    /// calls. An app that is busy and not answering therefore held every utterance for
+    /// 4.5 s before the paste fallback ran — measured 26 times in five days, all in
+    /// Adobe Illustrator, 19 of them at 4503–4528 ms. An app that is answering does so
+    /// in milliseconds: 946 of 988 timed attempts took under 50 ms in total.
+    private static let axTimeout: Float = 0.4
+
+    init() {
+        // Set on the system-wide element, which makes it this process's default for
+        // every accessibility call rather than something each call site has to remember.
+        let r = AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), Self.axTimeout)
+        vpLog("[TC] AX messaging timeout \(Self.axTimeout)s (AXError \(r.rawValue))")
+    }
+
     private let terminalApps: Set<String> = [
         "Terminal", "iTerm2", "kitty", "Alacritty",
         "WezTerm", "Ghostty", "Warp", "Hyper", "Rio"
@@ -731,11 +747,22 @@ class TerminalController: ObservableObject {
         // Source 1: System-wide focused element (works for Cocoa-native apps)
         let systemWide = AXUIElementCreateSystemWide()
         var sysFocused: AnyObject?
+        let started = CFAbsoluteTimeGetCurrent()
         let sysResult = AXUIElementCopyAttributeValue(
             systemWide, kAXFocusedUIElementAttribute as CFString, &sysFocused
         )
         if sysResult == .success, let ref = sysFocused {
             candidates.append(ref as! AXUIElement)
+        }
+
+        // Ran out the clock rather than being refused: the app is not servicing
+        // accessibility at all right now, so the app-level queries below would each
+        // wait out the same timeout to learn the same thing. A quick .cannotComplete
+        // is different — Catalyst apps answer that way here and then succeed below.
+        if sysResult == .cannotComplete,
+           CFAbsoluteTimeGetCurrent() - started >= Double(Self.axTimeout) * 0.9 {
+            vpLog("[TC] AX timed out — frontmost app is not answering")
+            return (candidates, sysResult)
         }
 
         // Source 2: App-level focused element (penetrates Catalyst UIKit bridge)
@@ -1074,7 +1101,51 @@ class TerminalController: ObservableObject {
         runAppleScript(source)
     }
 
+    /// The System Events process whose idle quit has been switched off.
+    private var configuredSystemEventsPID: pid_t?
+
+    /// Makes sure System Events is running and will stay running.
+    ///
+    /// Every keystroke and paste goes through System Events, and it quits itself 300 s
+    /// after launching — handling pastes does not reset that. The next delivery then
+    /// waits for it to relaunch. Measured over five days of this log: 111 deliveries
+    /// held their thread for 200 ms or more, six of them for 3–6 s, and every one came
+    /// 300 s or more after the previous slow one, none sooner.
+    ///
+    /// `quit delay` 0 is System Events' own setting for "do not quit when idle". It
+    /// belongs to the running process and is not saved anywhere, so it is applied again
+    /// whenever the process is not the one already configured — first use, or after
+    /// System Events has been restarted by anything else.
+    func keepSystemEventsRunning() {
+        func currentPID() -> pid_t? {
+            NSRunningApplication
+                .runningApplications(withBundleIdentifier: "com.apple.systemevents")
+                .first?.processIdentifier
+        }
+        if let pid = currentPID(), pid == configuredSystemEventsPID { return }
+
+        let started = CFAbsoluteTimeGetCurrent()
+        var error: NSDictionary?
+        let result = NSAppleScript(source: """
+        tell application "System Events"
+            set quit delay to 0
+            return quit delay
+        end tell
+        """)?.executeAndReturnError(&error)
+        let ms = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+
+        if let error {
+            vpLog("[AS-ERROR] could not disable System Events idle quit: \(error)")
+            return
+        }
+        configuredSystemEventsPID = currentPID()
+        vpLog("[AS] System Events pid \(configuredSystemEventsPID.map(String.init) ?? "?") "
+              + "quit delay now \(result?.int32Value ?? -1), took \(ms) ms")
+    }
+
     private func runAppleScript(_ source: String) {
+        keepSystemEventsRunning()
+
         #if DEBUG
         let logMsg = "[AS] \(Date()): \(source.prefix(80))"
         let data = (logMsg + "\n").data(using: .utf8)!
