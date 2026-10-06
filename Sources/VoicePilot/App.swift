@@ -45,7 +45,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dictationManager: dictationManager!
         )
 
-        parkZone = ParkZoneController(terminalController: terminalController!)
+        parkZone = ParkZoneController(
+            terminalController: terminalController!,
+            speechEngine: speechEngine!
+        )
         parkZone?.onSend = { [weak self] in
             self?.submitDictation()
         }

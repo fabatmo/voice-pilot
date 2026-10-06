@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Never becomes key or main: dragging, resizing or clicking the zone must not pull
@@ -22,6 +23,7 @@ final class ParkZoneController: NSObject, WindowRevealing {
 
     private var panel: NSPanel?
     private let terminalController: TerminalController
+    private let speechEngine: SpeechEngine
     private var debouncer: HoverParkDebouncer?
 
     // Action buttons are companion windows rather than controls inside the zone:
@@ -29,11 +31,12 @@ final class ParkZoneController: NSObject, WindowRevealing {
     // would park — and the submit and clear paths are both no-ops while parked, making
     // the buttons dead exactly when aimed at.
     private var buttons: [ZoneButtonWindow] = []
+    private var listeningObserver: AnyCancellable?
     private static let buttonGap: CGFloat = 10      // zone to column
-    private static let buttonSpacing: CGFloat = 8   // button to button
-    private static let buttonSize = NSSize(width: 58, height: 46)
+    private static let buttonSpacing: CGFloat = 6   // button to button
+    private static let buttonSize = NSSize(width: 52, height: 38)
     private static let cardMargin: CGFloat = 10     // card edge to column, top and bottom
-    private static let buttonCount = 2              // Send, Clear
+    private static let buttonCount = 3              // Send, Clear, Mute
 
     private static func columnHeight(count: Int) -> CGFloat {
         let n = CGFloat(count)
@@ -47,8 +50,9 @@ final class ParkZoneController: NSObject, WindowRevealing {
 
     var isVisible: Bool { panel != nil }
 
-    init(terminalController: TerminalController) {
+    init(terminalController: TerminalController, speechEngine: SpeechEngine) {
         self.terminalController = terminalController
+        self.speechEngine = speechEngine
         super.init()
         // Absent key means first run since the feature landed: show it, so the zone is
         // discoverable without hunting through the menu. After that, honour the choice.
@@ -212,7 +216,19 @@ final class ParkZoneController: NSObject, WindowRevealing {
                 vpLog("[Park] clear button pressed")
                 self?.onClear?()
             },
+            makeButton(id: "mute", symbol: "mic", title: "Mute", accent: .red) { [weak self] in
+                vpLog("[Park] mute button pressed")
+                self?.speechEngine.toggleListening()
+            },
         ]
+
+        // Mute is the only button with state. It follows the engine rather than its own
+        // clicks, so muting from the panel or the menu bar shows here too — and it stays
+        // lit while muted, because a silent app with nothing on screen saying why reads
+        // as a broken one.
+        listeningObserver = speechEngine.$isListening.sink { [weak self] listening in
+            self?.showMuteState(muted: !listening)
+        }
 
         // Position before ordering front, so no button is ever seen at its default
         // origin — the first placement used to be a silent no-op for exactly this
@@ -247,14 +263,14 @@ final class ParkZoneController: NSObject, WindowRevealing {
         // click that drifts a pixel must stay a click rather than becoming a drag.
         win.isMovableByWindowBackground = false
 
-        let model = ZoneButtonModel()
+        let model = ZoneButtonModel(symbol: symbol, title: title)
         let click = SendButtonView(frame: NSRect(origin: .zero, size: size))
         click.autoresizingMask = [.width, .height]
         click.onPressedChange = { down in model.pressed = down }
         click.onClick = action
 
         let host = NSHostingView(
-            rootView: ZoneButtonContent(model: model, symbol: symbol, title: title, accent: accent)
+            rootView: ZoneButtonContent(model: model, accent: accent)
         )
         host.frame = click.bounds
         host.autoresizingMask = [.width, .height]
@@ -268,7 +284,15 @@ final class ParkZoneController: NSObject, WindowRevealing {
         return ZoneButtonWindow(id: id, panel: win, model: model)
     }
 
+    private func showMuteState(muted: Bool) {
+        guard let model = buttons.first(where: { $0.id == "mute" })?.model else { return }
+        model.symbol = muted ? "mic.slash" : "mic"
+        model.title = muted ? "Unmute" : "Mute"
+        model.latched = muted
+    }
+
     private func hideButtons() {
+        listeningObserver = nil
         for b in buttons { b.panel.orderOut(nil) }
         buttons.removeAll()
     }
@@ -336,6 +360,15 @@ private final class ZoneButtonWindow {
 
 private final class ZoneButtonModel: ObservableObject {
     @Published var pressed = false
+    /// Held on by state rather than by the mouse — the mute button while muted.
+    @Published var latched = false
+    @Published var symbol: String
+    @Published var title: String
+
+    init(symbol: String, title: String) {
+        self.symbol = symbol
+        self.title = title
+    }
 }
 
 /// Click target for a window that never becomes key.
@@ -370,26 +403,32 @@ private final class SendButtonView: NSView {
 
 private struct ZoneButtonContent: View {
     @ObservedObject var model: ZoneButtonModel
-    let symbol: String
-    let title: String
     let accent: Color
+
+    private var lit: Bool { model.pressed || model.latched }
+
+    private var fill: Color {
+        if model.pressed { return accent.opacity(0.40) }
+        return model.latched ? accent.opacity(0.20) : ZoneStyle.fill
+    }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
-                .fill(model.pressed ? accent.opacity(0.40) : ZoneStyle.fill)
+                .fill(fill)
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
-                .strokeBorder(model.pressed ? accent.opacity(0.9) : ZoneStyle.border,
-                              lineWidth: model.pressed ? 2 : 1)
+                .strokeBorder(lit ? accent.opacity(0.9) : ZoneStyle.border,
+                              lineWidth: lit ? 2 : 1)
             VStack(spacing: 2) {
-                Image(systemName: symbol)
-                    .font(.system(size: 17, weight: .medium))
-                Text(title)
-                    .font(.system(size: 10, weight: .medium))
+                Image(systemName: model.symbol)
+                    .font(.system(size: 15, weight: .medium))
+                Text(model.title)
+                    .font(.system(size: 9, weight: .medium))
             }
-            .foregroundColor(model.pressed ? accent : Color.white.opacity(0.55))
+            .foregroundColor(lit ? accent : Color.white.opacity(0.55))
         }
         .animation(.easeOut(duration: 0.1), value: model.pressed)
+        .animation(.easeOut(duration: 0.1), value: model.latched)
     }
 }
 
