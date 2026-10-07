@@ -42,6 +42,17 @@ final class AnalyzerSpeechBackend: SpeechBackend {
     /// Finalized results arrive as distinct contiguous segments, not cumulatively.
     private var lastFinalizedSegment = ""
 
+    /// Whether any live partial of the segment being spoken began with "I".
+    ///
+    /// The committed result re-decodes a long window of audio — 8 to 18 s in every
+    /// case measured — that starts well before the first word, and the model turns the
+    /// silence, breaths and "uh"s in that lead-in into a run of "I, I, I,". The live
+    /// partials never contain it: 10 of 10 cases over six days (Oct 1–7), zero partials.
+    /// So a final that opens with that run, when no partial of the same segment opened
+    /// with "I", is the model inventing it, and the run is dropped before typing.
+    private var partialOpenedWithI = false
+    private static let leadingIRun = try! NSRegularExpression(pattern: "^(?:I,\\s*){2,}")
+
     func start() {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             guard status == .authorized else {
@@ -217,8 +228,12 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
                     await MainActor.run {
                         if isFinal {
-                            self.deliverFinal(text)
+                            self.deliverFinal(self.withoutInventedLeadingI(text))
+                            self.partialOpenedWithI = false
                         } else {
+                            if text.trimmingCharacters(in: .whitespaces).hasPrefix("I") {
+                                self.partialOpenedWithI = true
+                            }
                             self.onPartial?(text)
                         }
                     }
@@ -227,6 +242,18 @@ final class AnalyzerSpeechBackend: SpeechBackend {
                 vpLog("[Analyzer] results stream ended: \(error)")
             }
         }
+    }
+
+    @MainActor
+    private func withoutInventedLeadingI(_ text: String) -> String {
+        guard !partialOpenedWithI else { return text }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        let whole = NSRange(trimmed.startIndex..., in: trimmed)
+        guard let run = Self.leadingIRun.firstMatch(in: trimmed, range: whole),
+              let range = Range(run.range, in: trimmed) else { return text }
+        let kept = String(trimmed[range.upperBound...])
+        vpLog("[Analyzer] dropped invented '\(trimmed[range])' — no partial opened with I; keeping '\(kept.prefix(40))'")
+        return kept
     }
 
     @MainActor
