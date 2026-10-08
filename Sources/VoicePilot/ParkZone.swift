@@ -33,9 +33,12 @@ final class ParkZoneController: NSObject, WindowRevealing {
     private var buttons: [ZoneButtonWindow] = []
     private var listeningObserver: AnyCancellable?
     private static let buttonGap: CGFloat = 10      // zone to column
-    private static let buttonSpacing: CGFloat = 6   // button to button
-    private static let buttonSize = NSSize(width: 52, height: 38)
-    private static let cardMargin: CGFloat = 10     // card edge to column, top and bottom
+    private static let buttonSpacing: CGFloat = 5   // button to button
+    private static let buttonSize = NSSize(width: 52, height: 34)
+    private static let cardMargin: CGFloat = 4      // card edge to column, top and bottom
+    // Sized so three buttons fit the card at the height two did (120 pt): 3 × 34 + 2 × 5
+    // + 2 × 4. The first cut used 38 pt buttons and 10 pt margins, which forced the
+    // zone 26 pt taller — reported 2026-10-08 as the zone suddenly being bigger.
     private static let buttonCount = 3              // Send, Clear, Mute
 
     private static func columnHeight(count: Int) -> CGFloat {
@@ -421,7 +424,7 @@ private struct ZoneButtonContent: View {
                               lineWidth: lit ? 2 : 1)
             VStack(spacing: 2) {
                 Image(systemName: model.symbol)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 14, weight: .medium))
                 Text(model.title)
                     .font(.system(size: 9, weight: .medium))
             }
