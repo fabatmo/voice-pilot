@@ -28,6 +28,11 @@ final class WakeGate: ObservableObject {
     private var lastActivity = Date.distantPast
     private var closeGeneration = 0
 
+    /// Opened by a partial and not yet confirmed by its final. A partial that begins
+    /// "Pilot" can still finalise as "Pilots are flying", so the final has the last
+    /// word: it either confirms the opening or shuts the gate and is dropped.
+    private var provisional = false
+
     /// "Pilot", "pilot,", "Pilot." … at the very start, swallowing the punctuation and
     /// whitespace the recogniser puts after it so the remainder is ready to type.
     private static let opener = try! NSRegularExpression(
@@ -46,6 +51,19 @@ final class WakeGate: ObservableObject {
         lastActivity = Date()
     }
 
+    /// Every partial. Opens the gate as soon as one begins with the wake word, 1–3 s
+    /// before the final would — measured 2026-10-22: "Pilot" was in the partials at
+    /// 4:49:14 and the final opened the gate at 4:49:17. The state reacts at once; the
+    /// words still land when the recogniser finalises.
+    func notePartial(_ text: String) {
+        noteActivity()
+        guard enabled, !open, Self.opens(text) else { return }
+        provisional = true
+        vpLog("[Gate] opened by \"\(Self.word)\" in a partial — awaiting the final")
+        setOpen(true)
+        scheduleClose()
+    }
+
     /// What to deliver from a final, or nil when the gate swallowed it.
     func admit(_ text: String) -> String? {
         guard enabled else { return text }
@@ -55,15 +73,30 @@ final class WakeGate: ObservableObject {
         if let match = Self.opener.firstMatch(in: text, range: whole),
            let range = Range(match.range, in: text) {
             let rest = String(text[range.upperBound...])
-            vpLog("[Gate] opened by \"\(Self.word)\" — delivering '\(rest.prefix(60))'")
+            vpLog("[Gate] opened by \"\(Self.word)\"\(provisional ? " (confirmed)" : "") — delivering '\(rest.prefix(60))'")
+            provisional = false
             setOpen(true)
             scheduleClose()
             return rest
         }
 
-        if open { return text }
+        if open {
+            if provisional {
+                // The partial that opened the gate finalised as something else.
+                provisional = false
+                vpLog("[Gate] partial opening not confirmed by the final — dropped '\(text.prefix(60))'")
+                setOpen(false)
+                return nil
+            }
+            return text
+        }
         vpLog("[Gate] closed — dropped '\(text.prefix(60))'")
         return nil
+    }
+
+    private static func opens(_ text: String) -> Bool {
+        let whole = NSRange(text.startIndex..., in: text)
+        return opener.firstMatch(in: text, range: whole) != nil
     }
 
     private func scheduleClose() {
@@ -90,6 +123,7 @@ final class WakeGate: ObservableObject {
 
     private func close(reason: String) {
         guard open else { return }
+        provisional = false
         vpLog("[Gate] closed after \(reason) — say \"\(Self.word)\" to dictate")
         setOpen(false)
     }

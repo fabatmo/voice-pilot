@@ -42,11 +42,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         wakeGate = WakeGate()
-        // Partials keep an open gate open: the 20 s window runs from the last thing
-        // heard, not the last final delivered.
+        // Partials open the gate the moment one begins with "pilot", and keep an open
+        // gate open: the 20 s window runs from the last thing heard, not the last
+        // final delivered.
         speechEngine?.$currentTranscript
             .filter { !$0.isEmpty }
-            .sink { [weak self] _ in self?.wakeGate?.noteActivity() }
+            .sink { [weak self] text in self?.wakeGate?.notePartial(text) }
             .store(in: &cancellables)
 
         floatingPanel = FloatingPanelController(
