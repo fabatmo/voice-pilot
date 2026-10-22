@@ -112,9 +112,8 @@ final class WakeGate: ObservableObject {
     /// it to flush what was buffered while parked into the prompt first.
     var onOpened: (() -> Void)?
 
-    /// Fires when the gate shuts on silence, after `open` has gone false. AppDelegate
-    /// uses it to wipe what the window typed, so a window has two endings — sent, or
-    /// gone — and anything that leaked in from the room never lingers in the prompt.
+    /// Fires when the gate shuts on silence, after `open` has gone false. What the
+    /// window typed stays in the prompt (the wipe was withdrawn 2026-10-23).
     var onTimedOut: (() -> Void)?
 
     private var lastActivity = Date.distantPast
