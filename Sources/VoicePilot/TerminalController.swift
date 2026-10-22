@@ -301,19 +301,28 @@ class TerminalController: ObservableObject {
     /// hidden textarea ("Terminal input"), and what is drawn there is Claude Code's
     /// own input line behind a pty. A terminal has no "delete the selection" — Delete
     /// is one backspace to the program, whatever is highlighted — so the line can only
-    /// be cleared by the program's own key for it. Claude Code 2.1.308 binds ctrl+L to
-    /// chat:clearInput in its default Chat context. Escape would cancel the turn and
-    /// ctrl+C interrupts it; neither is an option.
+    /// be cleared by the program's own line-editing keys. Read from the Claude Code
+    /// 2.1.308 binary: its prompt editor handles ctrl+K (deleteToLineEnd) and ctrl+U
+    /// (deleteToLineStart) itself; "ctrl+L" there is the same handler as clearScreen
+    /// and clears nothing, and Fabian's keyboard test agreed on both (2026-10-22:
+    /// ctrl+L no, ctrl+U yes). K then U clear the current line whatever the cursor
+    /// position; Backspace at the start of an emptied line joins it to the one above,
+    /// so a few rounds take a multi-line prompt too. All three are no-ops on an empty
+    /// prompt. Escape would cancel the turn and ctrl+C interrupts it; neither is used.
     func voiceClearLine(charactersTyped: Int) {
         if isSubmitTarget, !frontmostIsTerminal, frontmostIsChromiumBased() {
             enableChromiumAccessibilityForReading()
             if focusedElementIsTerminalInput() {
                 runAppleScript("""
                 tell application "System Events"
-                    key code 37 using {control down}
+                    repeat 4 times
+                        key code 40 using {control down}
+                        key code 32 using {control down}
+                        key code 51
+                    end repeat
                 end tell
                 """)
-                vpLog("[TC] voice delete all: ctrl+L (Claude Code clearInput) in \(frontName)")
+                vpLog("[TC] voice delete all: 4 × (ctrl+K, ctrl+U, Backspace) in \(frontName)")
                 return
             }
         }

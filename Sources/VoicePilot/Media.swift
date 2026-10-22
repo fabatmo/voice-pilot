@@ -24,6 +24,8 @@ enum Media {
             mediaKey(.next, label: "next")
         case "previous song":
             mediaKey(.previous, label: "previous")
+        case "like":
+            SoundCloud.likePlayingTrack()
         default:
             vpLog("[Media] unknown verb '\(verb)'")
         }
