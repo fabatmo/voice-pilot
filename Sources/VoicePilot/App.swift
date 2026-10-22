@@ -45,7 +45,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dictationManager: dictationManager!
         )
 
-        parkZone = ParkZoneController(terminalController: terminalController!)
+        parkZone = ParkZoneController(
+            terminalController: terminalController!,
+            speechEngine: speechEngine!
+        )
         parkZone?.onSend = { [weak self] in
             self?.submitDictation()
         }
@@ -95,6 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         terminalController?.saveClipboard()
         dictationManager?.start()
+
+        // Launch System Events now rather than on the first utterance, which would
+        // otherwise be the one to wait for it. Async so the windows are up first.
+        DispatchQueue.main.async { [weak self] in
+            self?.terminalController?.keepSystemEventsRunning()
+        }
     }
 
     /// Rebuild the speech pipeline after the machine wakes.
