@@ -333,15 +333,28 @@ class TerminalController: ObservableObject {
                 vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
                 return
             }
-            // ⌘A then Delete, as real keys — what the keyboard does.
-            //
-            // Investigated 2026-09-30: Orca's whole AX tree contains one editable
-            // element, 9x16 points, AXNumberOfCharacters 0, tracking the caret. It
-            // captures keys through a hidden input and renders the text itself, so the
-            // text is not in the accessibility tree at all — no AX selection, value
-            // write or marker range can reach it. The triple-click that replaced them
-            // selected one character at a time (Fabian, 2026-10-22: "delete all doesn't
-            // work"), so he chose the keys: the hidden input does see ⌘A.
+            // Orca's prompt box is not a text field. Found 2026-10-22 after AX
+            // selection, ⌘A + Delete and a triple-click had each removed one character:
+            // the focused element is xterm.js's hidden textarea ("Terminal input"), and
+            // what is drawn there is Claude Code's own input line, running behind a pty.
+            // A terminal has no "delete the selection" — Delete is one backspace to the
+            // program, whatever is highlighted. The only thing that clears the line is
+            // the program's own key for it: Claude Code 2.1.308 binds ctrl+L to
+            // chat:clearInput in its default Chat context (no ~/.claude/keybindings.json
+            // overrides it here). Escape would cancel the turn and ctrl+C interrupts it,
+            // so neither is an option.
+            if focusedElementIsTerminalInput() {
+                runAppleScript("""
+                tell application "System Events"
+                    key code 37 using {control down}
+                end tell
+                """)
+                vpLog("[TC] clearLine: ctrl+L (Claude Code clearInput) in \(frontName)")
+                return
+            }
+
+            // A real text field in an Electron app: ⌘A then Delete as real keys, so
+            // React sees an input event.
             runAppleScript("""
             tell application "System Events"
                 key code 0 using {command down}
@@ -999,6 +1012,22 @@ class TerminalController: ObservableObject {
         }
 
         return false
+    }
+
+    /// Whether the focused element is an xterm.js input — a terminal drawn in a web
+    /// view. Orca's prompt box is one (AXDescription "Terminal input", DOM class
+    /// xterm-helper-textarea, 8x16 pt, AXNumberOfCharacters 0): the text lives in the
+    /// program behind the pty, not in any text field, so selection has no meaning
+    /// there and only the program's own line-editing keys can clear it.
+    private func focusedElementIsTerminalInput() -> Bool {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focused
+        ) == .success, let ref = focused else { return false }
+        var classes: AnyObject?
+        AXUIElementCopyAttributeValue(ref as! AXUIElement, "AXDOMClassList" as CFString, &classes)
+        return (classes as? [String])?.contains("xterm-helper-textarea") ?? false
     }
 
     private func isWritableText(_ element: AXUIElement) -> Bool {
