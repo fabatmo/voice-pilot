@@ -396,12 +396,14 @@ final class WakeGate: ObservableObject {
             setOpen(true)
             onMain { self.writing = true }
             scheduleClose()
-        // A remote command is a complete thought: after "next song" the window
-        // stayed green and took the room's talk ("the listener keeps listening",
-        // Fabian 2026-10-22). Keys (copy, paste, new line) are editing and stay open.
+        // Every command ends the window at once — "after any command is executed,
+        // it needs to terminate the listener immediately" (Fabian, 2026-10-23); the
+        // window had stayed green after "next song" and taken the room's talk.
+        // "write" is the one exception: it is the command that opens a window.
         case .open: close(reason: "open")
         case .media: close(reason: "music")
-        case .send, .key: break
+        case .key(_, _, let label): close(reason: label)
+        case .send: close(reason: "send")
         }
     }
 
