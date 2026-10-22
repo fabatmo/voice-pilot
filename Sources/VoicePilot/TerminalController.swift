@@ -333,51 +333,22 @@ class TerminalController: ObservableObject {
                 vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
                 return
             }
-            // Select through AX, delete with a real key.
+            // ⌘A then Delete, as real keys — what the keyboard does.
             //
-            // Selection is not React state — the component owns the value, not the
-            // caret — so AX can set the selected range where it cannot set the value.
-            // One real Delete then removes the selection and fires the input event
-            // React does listen for.
-            if selectAllViaAccessibility() {
-                runAppleScript("""
-                tell application "System Events"
-                    key code 51
-                end tell
-                """)
-                vpLog("[TC] clearLine: AX select-all + Delete")
-                return
-            }
-
-            // Backspace, repeated, for exactly what we typed.
-            //
-            // Investigated 2026-09-30 rather than guessed at further. Orca's whole AX
-            // tree contains one editable element: 9x16 points, AXNumberOfCharacters 0,
-            // with its x-position tracking the caret. It captures keys through a hidden
-            // input and renders the text itself, so the text is not in the
-            // accessibility tree at all — no AX selection, value write or marker range
-            // can ever reach it, which is why four attempts through AX behaved
-            // erratically.
-            //
-            // That leaves the keyboard, and Delete is the one key observed to land
-            // every single time. VoicePilot knows exactly how many characters it put
-            // there, so it deletes that many. Deterministic, uses no modifier that an
-            // app can claim as a shortcut, and cannot escape the text field the way
-            // select-all can.
-            if tripleClickSelectAndDelete() {
-                vpLog("[TC] clearLine: triple-click select + Delete")
-                return
-            }
-
-            // Last resort: remove exactly what we typed. Only works when this app put
-            // the text there, so it is the fallback rather than the plan.
-            let count = charactersTyped
-            guard count > 0 else {
-                vpLog("[TC] clearLine: triple-click failed and nothing typed by us")
-                return
-            }
-            postBackspaces(count + 2)
-            vpLog("[TC] clearLine: \(count) backspaces")
+            // Investigated 2026-09-30: Orca's whole AX tree contains one editable
+            // element, 9x16 points, AXNumberOfCharacters 0, tracking the caret. It
+            // captures keys through a hidden input and renders the text itself, so the
+            // text is not in the accessibility tree at all — no AX selection, value
+            // write or marker range can reach it. The triple-click that replaced them
+            // selected one character at a time (Fabian, 2026-10-22: "delete all doesn't
+            // work"), so he chose the keys: the hidden input does see ⌘A.
+            runAppleScript("""
+            tell application "System Events"
+                key code 0 using {command down}
+                key code 51
+            end tell
+            """)
+            vpLog("[TC] clearLine: ⌘A + Delete in \(frontName)")
             return
         }
 
