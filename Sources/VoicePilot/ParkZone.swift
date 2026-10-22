@@ -34,6 +34,7 @@ final class ParkZoneController: NSObject, WindowRevealing {
     private var buttons: [ZoneButtonWindow] = []
     private var listeningObserver: AnyCancellable?
     private var wakeObserver: AnyCancellable?
+    private var gateObserver: AnyCancellable?
     private static let buttonGap: CGFloat = 10      // zone to column
     private static let buttonSpacing: CGFloat = 5   // button to button
     private static let buttonSize = NSSize(width: 52, height: 34)
@@ -243,6 +244,11 @@ final class ParkZoneController: NSObject, WindowRevealing {
         wakeObserver = wakeGate.$enabled.sink { [weak self] enabled in
             self?.showWakeState(enabled: enabled)
         }
+        gateObserver = wakeGate.$open
+            .combineLatest(wakeGate.$writing, wakeGate.$sleeping)
+            .sink { [weak self] open, writing, sleeping in
+                self?.showGateState(open: open, writing: writing, sleeping: sleeping)
+            }
 
         // Position before ordering front, so no button is ever seen at its default
         // origin — the first placement used to be a silent no-op for exactly this
@@ -313,9 +319,34 @@ final class ParkZoneController: NSObject, WindowRevealing {
         model.latched = enabled
     }
 
+    /// One colour per mode, the moment it changes — the "I heard you" the mode needs,
+    /// since from the outside a shut gate and a deaf app look alike:
+    /// grey Pilot (mode off) · blue Pilot on (shut) · green Listening · orange Writing
+    /// · purple Asleep.
+    private func showGateState(open: Bool, writing: Bool, sleeping: Bool) {
+        guard let model = buttons.first(where: { $0.id == "pilot" })?.model else { return }
+        if sleeping {
+            model.hotTint = .purple
+            model.symbol = "moon.zzz.fill"
+            model.title = "Asleep"
+        } else if open && writing {
+            model.hotTint = .orange
+            model.symbol = "pencil.line"
+            model.title = "Writing"
+        } else if open {
+            model.hotTint = .green
+            model.symbol = "waveform"
+            model.title = "Listening"
+        } else {
+            model.hotTint = nil
+            showWakeState(enabled: wakeGate.enabled)
+        }
+    }
+
     private func hideButtons() {
         listeningObserver = nil
         wakeObserver = nil
+        gateObserver = nil
         for b in buttons { b.panel.orderOut(nil) }
         buttons.removeAll()
     }
@@ -385,6 +416,10 @@ private final class ZoneButtonModel: ObservableObject {
     @Published var pressed = false
     /// Held on by state rather than by the mouse — the mute button while muted.
     @Published var latched = false
+    /// Lit in this colour instead of the button's own accent — the Pilot button while
+    /// the gate is open: green listening, orange in the long "write" window. The "I
+    /// heard you" signal Fabian asked for 2026-10-22, one colour per mode.
+    @Published var hotTint: Color?
     @Published var symbol: String
     @Published var title: String
 
@@ -428,11 +463,12 @@ private struct ZoneButtonContent: View {
     @ObservedObject var model: ZoneButtonModel
     let accent: Color
 
-    private var lit: Bool { model.pressed || model.latched }
+    private var lit: Bool { model.pressed || model.latched || model.hotTint != nil }
+    private var tint: Color { model.hotTint ?? accent }
 
     private var fill: Color {
-        if model.pressed { return accent.opacity(0.40) }
-        return model.latched ? accent.opacity(0.20) : ZoneStyle.fill
+        if model.pressed || model.hotTint != nil { return tint.opacity(0.40) }
+        return model.latched ? tint.opacity(0.20) : ZoneStyle.fill
     }
 
     var body: some View {
@@ -440,7 +476,7 @@ private struct ZoneButtonContent: View {
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
                 .fill(fill)
             RoundedRectangle(cornerRadius: ZoneStyle.corner)
-                .strokeBorder(lit ? accent.opacity(0.9) : ZoneStyle.border,
+                .strokeBorder(lit ? tint.opacity(0.9) : ZoneStyle.border,
                               lineWidth: lit ? 2 : 1)
             VStack(spacing: 2) {
                 Image(systemName: model.symbol)
@@ -448,10 +484,11 @@ private struct ZoneButtonContent: View {
                 Text(model.title)
                     .font(.system(size: 9, weight: .medium))
             }
-            .foregroundColor(lit ? accent : Color.white.opacity(0.55))
+            .foregroundColor(lit ? tint : Color.white.opacity(0.55))
         }
         .animation(.easeOut(duration: 0.1), value: model.pressed)
         .animation(.easeOut(duration: 0.1), value: model.latched)
+        .animation(.easeOut(duration: 0.1), value: model.hotTint)
     }
 }
 

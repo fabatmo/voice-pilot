@@ -42,12 +42,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         wakeGate = WakeGate()
+        wakeGate?.onOpened = { [weak self] in self?.flushParkBuffer() }
+        wakeGate?.onTimedOut = { [weak self] in self?.discardAfterSilence() }
         // Partials open the gate the moment one begins with "pilot", and keep an open
         // gate open: the 20 s window runs from the last thing heard, not the last
         // final delivered.
         speechEngine?.$currentTranscript
             .filter { !$0.isEmpty }
-            .sink { [weak self] text in self?.wakeGate?.notePartial(text) }
+            .sink { [weak self] text in
+                guard let self, let gate = self.wakeGate else { return }
+                gate.notePartial(text)
+                // A bare command runs from the partial, 1–2 s before its final.
+                if let command = gate.immediateCommand(in: text) {
+                    self.run(command)
+                }
+            }
             .store(in: &cancellables)
 
         floatingPanel = FloatingPanelController(
@@ -152,33 +161,142 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vpLog("[App] handleUtterance: '\(text.prefix(80))'")
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard Date() > dictationSuppressUntil else { return }
 
         let heard = trimmed.replacingOccurrences(of: "\n", with: " ")
         guard !heard.isEmpty else { return }
 
         // Wake word mode: drops speech outright while the gate is shut, strips the
-        // "pilot" that opened it, and turns "action send" / "action delete" into the
-        // Send and Clear buttons. Sits before parking so a shut gate never fills the
-        // park buffer either — nothing said across the desk is kept anywhere.
+        // "pilot" that opened it, and turns "action send" / "action delete" /
+        // "action stop" / "action mute" into Send, Clear, Escape and Mute. Sits
+        // before parking so a shut gate never fills the park buffer either — nothing
+        // said across the desk is kept anywhere. The gate sees every final, even
+        // during the post-send suppression, so a command fired from a partial is
+        // always reconciled with its final.
         guard let gate = wakeGate else { return }
-        switch gate.admit(heard) {
+        perform(gate.admit(heard))
+    }
+
+    /// One place for what a verdict does, whether it came from a final or a partial.
+    private func perform(_ verdict: WakeGate.Verdict) {
+        switch verdict {
         case .drop:
             return
-        case .send:
-            submitDictation()
-        case .clear:
-            clearDictation()
+        case .command(let command):
+            run(command)
         case .type(let clean):
+            // The window after a send swallows the utterance that was still in
+            // flight; commands above are not subject to it.
+            guard Date() > dictationSuppressUntil else { return }
             typeUtterance(clean)
         case .typeThenSend(let clean):
+            guard Date() > dictationSuppressUntil else { return }
             typeUtterance(clean)
             // The paste has to land before Enter. Orca takes the clipboard a beat
             // after the keystroke; Enter on its heels would submit the previous text.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.submitDictation()
+                self?.voiceSend()
             }
         }
+    }
+
+    /// Spoken commands work wherever the cursor is — no submit-target guard, unlike
+    /// the Send and Clear buttons and middle-click, which keep theirs: a click can
+    /// land anywhere, a spoken "action send" cannot be an accident.
+    private func run(_ command: WakeGate.Command) {
+        switch command {
+        case .send:
+            voiceSend()
+        case .delete:
+            voiceDelete(all: false)
+        case .deleteAll:
+            voiceDelete(all: true)
+        case .stop:
+            terminalController?.pressKey(53, label: "Escape")
+        case .mute:
+            // In pilot mode the gate went to sleep instead, mic on, so "hey pilot"
+            // can wake it. With the mode off there is nothing to wake: real mute.
+            if wakeGate?.enabled != true { speechEngine?.stopListening() }
+        case .write:
+            break   // the gate opened itself with the long window
+        case .key(let code, let modifiers, let label):
+            terminalController?.pressKey(code, modifiers: modifiers, label: label)
+        case .open(let target):
+            Launcher.open(target)
+        case .media(let verb):
+            Media.perform(verb)
+        }
+    }
+
+    /// "action send": Enter in the frontmost app, and the prompt is done.
+    private func voiceSend() {
+        if terminalController?.parked == true {
+            vpLog("[App] action send ignored — parked")
+            return
+        }
+        if let buffered = dictationManager?.accumulatedText, !buffered.isEmpty {
+            vpLog("[App] action send discarding \(buffered.count) buffered chars")
+        }
+        dictationSuppressUntil = Date().addingTimeInterval(3.0)
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        wakeGate?.closeForSend()
+        terminalController?.pressKey(36, label: "Enter")
+    }
+
+    /// "action delete" / "action delete all". In a submit target the app-specific
+    /// clear (terminal line kill, Orca triple-click) knows best; anywhere else,
+    /// "delete" removes exactly what we typed and "delete all" selects the focused
+    /// field and deletes it.
+    private func voiceDelete(all: Bool) {
+        if terminalController?.parked == true {
+            vpLog("[App] action delete ignored — parked")
+            return
+        }
+        if terminalController?.isSubmitTarget == true {
+            terminalController?.clearLine(charactersTyped: dictationCurrentText.count)
+        } else if all {
+            terminalController?.deleteAllInFocusedField()
+        } else {
+            terminalController?.deleteTyped(dictationCurrentText.count)
+        }
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        vpLog("[App] action delete\(all ? " all" : ""): dictation state reset")
+    }
+
+    /// The listening window ended in silence, not "action send": wipe what it typed.
+    /// Only when this app typed something since the last send or clear — otherwise
+    /// the triple-click-and-Delete would take text Fabian typed by hand.
+    private func discardAfterSilence() {
+        guard !dictationCurrentText.isEmpty else {
+            vpLog("[App] window timed out with nothing typed — nothing to discard")
+            return
+        }
+        vpLog("[App] window timed out — discarding \(dictationCurrentText.count) typed chars")
+        voiceDelete(all: false)
+    }
+
+    /// "pilot" types out what was dictated while parked, once, ahead of the words that
+    /// followed it. Only when delivery is actually possible: parked, the flush would
+    /// bounce straight back into the buffer; in a non-target app it has nowhere to go
+    /// and would be lost. Both cases leave the buffer alone for the next "pilot".
+    private func flushParkBuffer() {
+        guard let buffered = dictationManager?.accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines),
+              !buffered.isEmpty else { return }
+        if terminalController?.parked == true {
+            vpLog("[App] pilot: \(buffered.count) buffered chars kept — still parked")
+            return
+        }
+        guard terminalController?.isSubmitTarget == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] pilot: \(buffered.count) buffered chars kept — frontmost is \(front), not a submit target")
+            return
+        }
+        vpLog("[App] pilot: flushing \(buffered.count) buffered chars from the park zone")
+        typeUtterance(buffered.replacingOccurrences(of: "\n", with: " "))
+        dictationManager?.clear()
     }
 
     private func typeUtterance(_ clean: String) {

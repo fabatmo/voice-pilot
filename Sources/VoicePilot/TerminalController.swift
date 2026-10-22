@@ -236,6 +236,62 @@ class TerminalController: ObservableObject {
         runAppleScript(script)
     }
 
+    // MARK: - Voice commands
+
+    private var frontName: String { NSWorkspace.shared.frontmostApplication?.localizedName ?? "?" }
+
+    /// A keystroke for a spoken "action …". No submit-target guard: the command is
+    /// explicit, and Fabian wants it wherever the cursor is — WhatsApp, Notes, anywhere
+    /// (2026-10-22). Modifiers are System Events names: "command", "shift", "option".
+    func pressKey(_ code: Int, modifiers: [String] = [], label: String) {
+        let using = modifiers.isEmpty
+            ? ""
+            : " using {\(modifiers.map { "\($0) down" }.joined(separator: ", "))}"
+        runAppleScript("""
+        tell application "System Events"
+            key code \(code)\(using)
+        end tell
+        """)
+        vpLog("[TC] voice key \(label) → \(frontName)")
+    }
+
+    /// "action delete all" outside a submit target: ⌘A then Delete, but only once AX
+    /// confirms a text field has focus — anywhere else select-all takes whatever the
+    /// app calls everything, and Delete destroys it.
+    @discardableResult
+    func deleteAllInFocusedField() -> Bool {
+        guard focusedElementIsTextField() else {
+            vpLog("[TC] delete all refused — no focused text field in \(frontName)")
+            return false
+        }
+        runAppleScript("""
+        tell application "System Events"
+            key code 0 using {command down}
+            key code 51
+        end tell
+        """)
+        vpLog("[TC] delete all: ⌘A + Delete in \(frontName)")
+        return true
+    }
+
+    /// "action delete" outside a submit target: remove exactly what this app typed,
+    /// one Delete per character. Cannot escape the field the way select-all can.
+    func deleteTyped(_ count: Int) {
+        guard count > 0 else {
+            vpLog("[TC] delete: nothing typed by us in \(frontName)")
+            return
+        }
+        let n = min(count, 800)
+        runAppleScript("""
+        tell application "System Events"
+            repeat \(n) times
+                key code 51
+            end repeat
+        end tell
+        """)
+        vpLog("[TC] delete: \(n) Deletes in \(frontName)")
+    }
+
     /// Wipes whatever is sitting on the terminal's current input line.
     ///
     /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,

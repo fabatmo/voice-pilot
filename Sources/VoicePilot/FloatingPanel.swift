@@ -199,6 +199,7 @@ struct MiniContent: View {
     /// invisible: silently not typing would otherwise look like a broken app.
     private var statusColor: Color {
         if terminalController.parked { return .orange }
+        if wakeGate.sleeping { return .purple }
         if waitingForWakeWord { return .blue }
         return speechEngine.isListening ? .green : .red
     }
@@ -221,6 +222,10 @@ struct MiniContent: View {
                     Text("Parked — buffering, not typing")
                         .font(.system(size: 12))
                         .foregroundColor(.orange)
+                } else if wakeGate.sleeping {
+                    Text("Asleep — say “hey pilot”")
+                        .font(.system(size: 12))
+                        .foregroundColor(.purple)
                 } else if waitingForWakeWord {
                     Text("Say “pilot” to dictate")
                         .font(.system(size: 12))
