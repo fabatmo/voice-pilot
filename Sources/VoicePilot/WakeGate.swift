@@ -6,26 +6,53 @@ import Combine
 /// `idleWindow`, and "action send" submits the prompt and shuts it. Off (the default)
 /// is ordinary always-on dictation.
 ///
+/// Spoken commands — "action send", "action delete", "action open Photoshop" … — are
+/// decided here as well, whether the mode is on or off, and carried out by
+/// AppDelegate. They carry their own prefix, "action", so they are never mistaken
+/// for the wake word opening a sentence that happens to start with "send".
+///
 /// Speech that arrives while the gate is shut is dropped, not buffered — the point
 /// of the mode is that a conversation across the desk leaves no trace anywhere.
 /// While it is open, the gate cannot tell voices apart: on 2026-10-22 one "pilot"
-/// let six other people's utterances through in 50 s. Fabian chose 20 s with
-/// a spoken end over the one-utterance rule tried in between. The command carries
-/// its own prefix, "action", so it is never mistaken for the wake word opening a
-/// sentence that happens to start with "send".
+/// let six other people's utterances through in 50 s. Fabian chose a silence window
+/// with a spoken end, and a timeout that wipes, over the one-utterance rule tried in
+/// between.
 final class WakeGate: ObservableObject {
     static let enabledKey = "wakeWordEnabled"
     static let word = "pilot"
     static let actionWord = "action"
+
     /// Longest silence that keeps the gate open, measured from the last thing heard.
     /// Was 20 s; Fabian cut it to 10 on 2026-10-22 and made the timeout a cancel:
     /// a window that ends in silence rather than "action send" leaves nothing behind.
-    static let idleWindow: TimeInterval = 10
+    static let silenceWindow: TimeInterval = 10
+    /// "action write": room to think. The window a composed prompt gets.
+    static let writeWindow: TimeInterval = 60
 
-    /// Fires when the gate shuts on silence, after `open` has gone false. AppDelegate
-    /// uses it to wipe what the window typed, so a window has two endings — sent, or
-    /// gone — and anything that leaked in from the room never lingers in the prompt.
-    var onTimedOut: (() -> Void)?
+    /// The window currently in force — `silenceWindow`, or `writeWindow` after
+    /// "action write" until the gate next shuts.
+    private(set) var idleWindow: TimeInterval = WakeGate.silenceWindow
+
+    /// A spoken "action …". The gate decides; AppDelegate carries it out.
+    enum Command: Equatable {
+        /// Enter, and the prompt is done — "action send".
+        case send
+        /// Remove what this app typed — "action delete".
+        case delete
+        /// Select all in the focused field and delete — "action delete all".
+        case deleteAll
+        /// Escape — "action stop".
+        case stop
+        /// Mute the mic — "action mute". There is no spoken unmute: a muted app
+        /// cannot hear one. The button does that.
+        case mute
+        /// Open the gate with the long window — "action write".
+        case write
+        /// A keystroke, by System Events key code and modifier names.
+        case key(code: Int, modifiers: [String], label: String)
+        /// Launch an app, folder or file by spoken name — "action open Illustrator".
+        case open(String)
+    }
 
     /// What to do with a final.
     enum Verdict {
@@ -33,15 +60,8 @@ final class WakeGate: ObservableObject {
         case type(String)
         /// Type this, then submit — "… action send" at the end of a sentence.
         case typeThenSend(String)
-        /// Submit what has been typed — "action send" on its own.
-        case send
-        /// Wipe the line — "action delete".
-        case clear
-        /// Press Escape — "action stop".
-        case escape
-        /// Mute the mic — "action mute". There is no spoken unmute: a muted app
-        /// cannot hear one. The button does that.
-        case mute
+        /// Carry out a command.
+        case command(Command)
         /// The gate swallowed it.
         case drop
     }
@@ -63,6 +83,11 @@ final class WakeGate: ObservableObject {
     /// it to flush what was buffered while parked into the prompt first.
     var onOpened: (() -> Void)?
 
+    /// Fires when the gate shuts on silence, after `open` has gone false. AppDelegate
+    /// uses it to wipe what the window typed, so a window has two endings — sent, or
+    /// gone — and anything that leaked in from the room never lingers in the prompt.
+    var onTimedOut: (() -> Void)?
+
     private var lastActivity = Date.distantPast
     private var closeGeneration = 0
 
@@ -70,6 +95,14 @@ final class WakeGate: ObservableObject {
     /// "Pilot" can still finalise as "Pilots are flying", so the final has the last
     /// word: it either confirms the opening or shuts the gate and is dropped.
     private var provisional = false
+
+    /// Set when a command ran from a partial; the segment's final must not run it
+    /// again. Reset by every final.
+    private var partialCommandFired = false
+
+    // MARK: - Patterns
+
+    private static let fillers = "(?:(?:uh|um|uh-huh|hmm|hm|okay|ok|yeah|so|and|hey|voice)[\\s,.!?-]+)*"
 
     /// The wake word where it starts a sentence, swallowing the punctuation and
     /// whitespace the recogniser puts after it so the remainder is ready to type.
@@ -83,9 +116,84 @@ final class WakeGate: ObservableObject {
     ///     marks a new sentence — "the pilot said" never gets one, so it stays a word.
     /// The last such match wins; what precedes it was not addressed to the app.
     private static let opener = try! NSRegularExpression(
-        pattern: "(?:(?i:^\\W*(?:(?:uh|um|uh-huh|hmm|hm|okay|ok|yeah|so|and|hey|voice)[\\s,.!?-]+)*pilot)|[.!?]\\s+Pilot)\\b[\\s,.!?:;]*",
+        pattern: "(?:(?i:^\\W*\(fillers)pilot)|[.!?]\\s+Pilot)\\b[\\s,.!?:;]*",
         options: []
     )
+
+    /// Spoken verbs, longest first so "delete all" wins over "delete".
+    private static let verbs = "send|delete all|delete|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open"
+
+    /// "action <verb> [argument]" at the end of an utterance, with whatever
+    /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
+    /// "action open Photoshop".
+    private static let command = try! NSRegularExpression(
+        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(\(verbs))\\b(?:[\\s,]+(.+?))?[\\s.!?]*$",
+        options: .caseInsensitive
+    )
+
+    /// The wake word and a verb with nothing else — "Pilot send." — is the command
+    /// too. Fabian said it that way three times on 2026-10-22 and got "send." typed;
+    /// "pilot, send the file" is still words, because something follows the verb.
+    private static let bareCommand = try! NSRegularExpression(
+        pattern: "^\\W*\(fillers)pilot\\b[\\s,.]+(\(verbs))\\b(?:[\\s,]+(.+?))?[\\s.!?]*$",
+        options: .caseInsensitive
+    )
+
+    /// A parsed "action …": the verb, what followed it, and the words before it.
+    private struct Spoken {
+        let verb: String
+        let argument: String
+        let body: String
+        var bare: Bool { body.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private static func parse(_ text: String) -> Spoken? {
+        let whole = NSRange(text.startIndex..., in: text)
+        let spoken: Spoken
+        if let match = bareCommand.firstMatch(in: text, range: whole),
+           let verb = Range(match.range(at: 1), in: text) {
+            let argument = Range(match.range(at: 2), in: text).map { String(text[$0]) } ?? ""
+            spoken = Spoken(verb: text[verb].lowercased(), argument: argument, body: "")
+        } else if let match = command.firstMatch(in: text, range: whole),
+                  let range = Range(match.range, in: text),
+                  let verb = Range(match.range(at: 1), in: text) {
+            let argument = Range(match.range(at: 2), in: text).map { String(text[$0]) } ?? ""
+            spoken = Spoken(verb: text[verb].lowercased(), argument: argument, body: String(text[..<range.lowerBound]))
+        } else {
+            return nil
+        }
+        // "open" needs a target; "delete all" tolerates one ("… all lines"); any other
+        // verb followed by more words is a sentence, not a command — "action copy the
+        // file" is dictation.
+        switch spoken.verb {
+        case "open": return spoken.argument.isEmpty ? nil : spoken
+        case "delete all": return spoken
+        default: return spoken.argument.isEmpty ? spoken : nil
+        }
+    }
+
+    private static func command(for spoken: Spoken) -> Command {
+        switch spoken.verb {
+        case "send": return .send
+        case "delete": return .delete
+        case "delete all": return .deleteAll
+        case "stop": return .stop
+        case "mute": return .mute
+        case "write": return .write
+        case "select all": return .key(code: 0, modifiers: ["command"], label: "⌘A")
+        case "copy": return .key(code: 8, modifiers: ["command"], label: "⌘C")
+        case "paste": return .key(code: 9, modifiers: ["command"], label: "⌘V")
+        case "cut": return .key(code: 7, modifiers: ["command"], label: "⌘X")
+        case "undo": return .key(code: 6, modifiers: ["command"], label: "⌘Z")
+        case "redo": return .key(code: 6, modifiers: ["command", "shift"], label: "⇧⌘Z")
+        case "new line": return .key(code: 36, modifiers: ["shift"], label: "⇧⏎")
+        case "tab": return .key(code: 48, modifiers: [], label: "⇥")
+        case "save": return .key(code: 1, modifiers: ["command"], label: "⌘S")
+        case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
+        case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
+        default: return .open(spoken.argument)
+        }
+    }
 
     /// Range of the wake word that opens this text, or nil.
     private static func openerRange(in text: String) -> Range<String.Index>? {
@@ -97,6 +205,8 @@ final class WakeGate: ObservableObject {
     init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
     }
+
+    // MARK: - Partials
 
     /// Call on every partial and final. Measured from the last thing heard rather than
     /// the last thing delivered, so the recogniser's finalisation lag does not eat the
@@ -111,132 +221,82 @@ final class WakeGate: ObservableObject {
     /// words still land when the recogniser finalises.
     func notePartial(_ text: String) {
         noteActivity()
-        guard enabled, !open, Self.opens(text) else { return }
+        guard enabled, !open, Self.openerRange(in: text) != nil else { return }
         provisional = true
         vpLog("[Gate] opened by \"\(Self.word)\" in a partial — awaiting the final")
         setOpen(true)
         scheduleClose()
     }
 
-    /// "action send" / "action delete" / "action stop" at the end of an utterance,
-    /// with whatever punctuation the recogniser wrapped it in: "Action send.",
-    /// ", action, delete!".
-    private static let command = try! NSRegularExpression(
-        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete|stop|mute)\\b[\\s.!?]*$",
-        options: .caseInsensitive
-    )
-
-    /// The wake word and a verb with nothing else — "Pilot send." — is the command
-    /// too. Fabian said it that way three times on 2026-10-22 and got "send." typed;
-    /// "pilot, send the file" is still words, because something follows the verb.
-    private static let bareCommand = try! NSRegularExpression(
-        pattern: "^\\W*(?:(?:uh|um|uh-huh|hmm|hm|okay|ok|yeah|so|and|hey|voice)[\\s,.!?-]+)*pilot\\b[\\s,.]+(send|delete|stop|mute)\\b[\\s.!?]*$",
-        options: .caseInsensitive
-    )
-
-    /// Set when a command ran from a partial; the segment's final must not run it
-    /// again. Reset by every final.
-    private var partialCommandFired = false
-
-    /// The verb of a command that is the whole of `text` — "Action send.", "Pilot,
-    /// delete" — or nil when there are words in front of it or no command at all.
-    private static func bareVerb(in text: String) -> String? {
-        let whole = NSRange(text.startIndex..., in: text)
-        if let match = bareCommand.firstMatch(in: text, range: whole),
-           let verb = Range(match.range(at: 1), in: text) {
-            return text[verb].lowercased()
-        }
-        if let match = command.firstMatch(in: text, range: whole),
-           let range = Range(match.range, in: text),
-           let verb = Range(match.range(at: 1), in: text),
-           text[..<range.lowerBound].trimmingCharacters(in: .whitespaces).isEmpty {
-            return text[verb].lowercased()
-        }
-        return nil
-    }
-
     /// A command on its own in a partial: run it now, not 1–2 s later when the final
     /// lands (Fabian, 2026-10-22: "for any action command, don't wait"). Only the bare
-    /// form — words in front of it are not final yet and have to be typed first, so
-    /// that shape waits for the final.
-    func immediateCommand(in partial: String) -> Verdict? {
-        guard enabled, !partialCommandFired, let verb = Self.bareVerb(in: partial) else { return nil }
+    /// form — words in front of it are not final yet and have to be typed first — and
+    /// never "open", whose target is still being spoken.
+    func immediateCommand(in partial: String) -> Command? {
+        guard !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, spoken.verb != "open" else { return nil }
         partialCommandFired = true
-        vpLog("[Gate] \"\(Self.actionWord) \(verb)\" in a partial — executing now")
-        return verdict(for: verb)
+        let command = Self.command(for: spoken)
+        vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\" in a partial — executing now")
+        apply(command)
+        return command
     }
 
-    private func verdict(for verb: String) -> Verdict {
-        switch verb {
-        case "delete":
-            close(reason: "delete")
-            return .clear
-        case "stop":
-            close(reason: "stop")
-            return .escape
-        case "mute":
-            close(reason: "mute")
-            return .mute
-        default:
-            return .send   // submitDictation shuts the gate through closeForSend
-        }
-    }
+    // MARK: - Finals
 
     /// What to do with a final.
     func admit(_ text: String) -> Verdict {
         let firedEarly = partialCommandFired
         partialCommandFired = false
-        guard enabled else { return .type(text) }
         noteActivity()
 
-        var body = text
-        var command: String?
-        let whole = NSRange(body.startIndex..., in: body)
-        if let match = Self.bareCommand.firstMatch(in: body, range: whole),
-           let verb = Range(match.range(at: 1), in: body) {
-            command = body[verb].lowercased()
-            body = ""
-        } else if let match = Self.command.firstMatch(in: body, range: whole),
-                  let range = Range(match.range, in: body),
-                  let verb = Range(match.range(at: 1), in: body) {
-            command = body[verb].lowercased()
-            body = String(body[..<range.lowerBound])
+        let spoken = Self.parse(text)
+        let body = spoken?.body ?? text
+
+        if let spoken {
+            if firedEarly, spoken.bare {
+                vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\" already executed from the partial")
+                return .drop
+            }
+            let command = Self.command(for: spoken)
+            if command == .send {
+                return admitSend(body: body)
+            }
+            // Words spoken before a command in the same breath are dropped: they were
+            // part of what is being cancelled, copied or opened, not dictation.
+            let dropped = body.trimmingCharacters(in: .whitespaces)
+            vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\"\(spoken.argument.isEmpty ? "" : " '\(spoken.argument)'")\(dropped.isEmpty ? "" : " — dropping the words before it: '\(dropped.prefix(60))'")")
+            apply(command)
+            return .command(command)
         }
 
-        if let verb = command, firedEarly, body.trimmingCharacters(in: .whitespaces).isEmpty {
-            vpLog("[Gate] \"\(Self.actionWord) \(verb)\" already executed from the partial")
-            return .drop
-        }
+        return admitWords(text, sends: false)
+    }
 
-        // "action delete" wipes the line; words spoken before it in the same breath
-        // would be typed and wiped again, so they are dropped instead.
-        // delete, stop and mute all mean "done with this": they shut the gate as well,
-        // so the next sentence needs its own "pilot". On 2026-10-22 two "action
-        // delete"s left the gate open and the room's next six sentences went into the
-        // prompt — and one into Photoshop. Words before the command are dropped: they
-        // were part of what is being cancelled.
-        let dropped = body.trimmingCharacters(in: .whitespaces)
-        let droppedNote = dropped.isEmpty ? "" : " — dropping the words before it: '\(dropped.prefix(60))'"
-        if command == "delete" {
-            vpLog("[Gate] \"\(Self.actionWord) delete\"\(droppedNote)")
-            close(reason: "delete")
-            return .clear
+    /// "action send", alone or ending a sentence.
+    private func admitSend(body: String) -> Verdict {
+        if body.trimmingCharacters(in: .whitespaces).isEmpty {
+            vpLog("[Gate] \"\(Self.actionWord) send\"")
+            return .command(.send)
         }
-        if command == "stop" {
-            vpLog("[Gate] \"\(Self.actionWord) stop\"\(droppedNote)")
-            close(reason: "stop")
-            return .escape
+        if Self.openerRange(in: body) != nil {
+            return admitWords(body, sends: true)
         }
-        if command == "mute" {
-            vpLog("[Gate] \"\(Self.actionWord) mute\"\(droppedNote)")
-            close(reason: "mute")
-            return .mute
+        if !enabled || (open && !provisional) {
+            vpLog("[Gate] delivering '\(body.prefix(60))' then send")
+            return .typeThenSend(body)
         }
-        let sends = command == "send"
+        vpLog("[Gate] \"\(Self.actionWord) send\" — dropping the words before it, gate was shut: '\(body.prefix(60))'")
+        return .command(.send)
+    }
 
-        if let range = Self.openerRange(in: body) {
-            let rest = String(body[range.upperBound...])
-            let before = body[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+    /// Free text: through when the mode is off, when the wake word opens it, or while
+    /// the gate is open; dropped otherwise.
+    private func admitWords(_ text: String, sends: Bool) -> Verdict {
+        guard enabled else { return sends ? .typeThenSend(text) : .type(text) }
+
+        if let range = Self.openerRange(in: text) {
+            let rest = String(text[range.upperBound...])
+            let before = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
             if !before.isEmpty {
                 vpLog("[Gate] dropping what the segmenter merged in before \"\(Self.word)\": '\(before.prefix(60))'")
             }
@@ -248,20 +308,6 @@ final class WakeGate: ObservableObject {
             return sends ? .typeThenSend(rest) : .type(rest)
         }
 
-        if sends {
-            // "action send" on its own, or ending a sentence spoken while open.
-            if body.trimmingCharacters(in: .whitespaces).isEmpty {
-                vpLog("[Gate] \"\(Self.actionWord) send\"")
-                return .send
-            }
-            if open && !provisional {
-                vpLog("[Gate] open — delivering '\(body.prefix(60))' then send")
-                return .typeThenSend(body)
-            }
-            vpLog("[Gate] \"\(Self.actionWord) send\" — dropping the words before it, gate was shut: '\(body.prefix(60))'")
-            return .send
-        }
-
         if open {
             if provisional {
                 // The partial that opened the gate finalised as something else.
@@ -270,34 +316,54 @@ final class WakeGate: ObservableObject {
                 setOpen(false)
                 return .drop
             }
-            return .type(text)
+            return sends ? .typeThenSend(text) : .type(text)
         }
         vpLog("[Gate] closed — dropped '\(text.prefix(60))'")
         return .drop
     }
 
-    private static func opens(_ text: String) -> Bool {
-        openerRange(in: text) != nil
+    /// What a command does to the gate itself. delete, stop and mute mean "done with
+    /// this" and shut it, so the next sentence needs its own "pilot" — on 2026-10-22
+    /// two "action delete"s left it open and the room's next six sentences went into
+    /// the prompt, one into Photoshop. send shuts it through closeForSend. write
+    /// opens it with the long window.
+    private func apply(_ command: Command) {
+        switch command {
+        case .delete, .deleteAll: close(reason: "delete")
+        case .stop: close(reason: "stop")
+        case .mute: close(reason: "mute")
+        case .write:
+            guard enabled else { return }
+            idleWindow = Self.writeWindow
+            provisional = false
+            vpLog("[Gate] \"\(Self.actionWord) write\" — open for \(Int(Self.writeWindow)) s of silence")
+            setOpen(true)
+            scheduleClose()
+        case .send, .key, .open: break
+        }
     }
+
+    // MARK: - Closing
 
     private func scheduleClose() {
         closeGeneration += 1
         let generation = closeGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleWindow) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + idleWindow) { [weak self] in
             self?.checkIdle(generation: generation)
         }
     }
 
-    /// Fires 20 s after the last final. Speech since then (partials count) pushes the
-    /// deadline out by however much is left, so the gate only shuts on real silence.
+    /// Fires `idleWindow` after the last final. Speech since then (partials count)
+    /// pushes the deadline out by however much is left, so the gate only shuts on real
+    /// silence.
     private func checkIdle(generation: Int) {
         guard generation == closeGeneration, open else { return }
         let idle = Date().timeIntervalSince(lastActivity)
-        if idle >= Self.idleWindow {
+        if idle >= idleWindow {
             close(reason: "\(Int(idle)) s silence")
             onTimedOut?()
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + (Self.idleWindow - idle)) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + (idleWindow - idle)) { [weak self] in
                 self?.checkIdle(generation: generation)
             }
         }
@@ -310,6 +376,7 @@ final class WakeGate: ObservableObject {
     }
 
     private func close(reason: String) {
+        idleWindow = Self.silenceWindow
         guard open else { return }
         provisional = false
         vpLog("[Gate] closed after \(reason) — say \"\(Self.word)\" to dictate")

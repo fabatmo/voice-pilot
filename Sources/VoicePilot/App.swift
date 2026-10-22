@@ -53,8 +53,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, let gate = self.wakeGate else { return }
                 gate.notePartial(text)
                 // A bare command runs from the partial, 1–2 s before its final.
-                if let verdict = gate.immediateCommand(in: text) {
-                    self.perform(verdict)
+                if let command = gate.immediateCommand(in: text) {
+                    self.run(command)
                 }
             }
             .store(in: &cancellables)
@@ -181,14 +181,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch verdict {
         case .drop:
             return
-        case .send:
-            submitDictation()
-        case .clear:
-            clearDictation()
-        case .escape:
-            terminalController?.pressEscape()
-        case .mute:
-            speechEngine?.stopListening()
+        case .command(let command):
+            run(command)
         case .type(let clean):
             // The window after a send swallows the utterance that was still in
             // flight; commands above are not subject to it.
@@ -200,9 +194,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // The paste has to land before Enter. Orca takes the clipboard a beat
             // after the keystroke; Enter on its heels would submit the previous text.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.submitDictation()
+                self?.voiceSend()
             }
         }
+    }
+
+    /// Spoken commands work wherever the cursor is — no submit-target guard, unlike
+    /// the Send and Clear buttons and middle-click, which keep theirs: a click can
+    /// land anywhere, a spoken "action send" cannot be an accident.
+    private func run(_ command: WakeGate.Command) {
+        switch command {
+        case .send:
+            voiceSend()
+        case .delete:
+            voiceDelete(all: false)
+        case .deleteAll:
+            voiceDelete(all: true)
+        case .stop:
+            terminalController?.pressKey(53, label: "Escape")
+        case .mute:
+            speechEngine?.stopListening()
+        case .write:
+            break   // the gate opened itself with the long window
+        case .key(let code, let modifiers, let label):
+            terminalController?.pressKey(code, modifiers: modifiers, label: label)
+        case .open(let target):
+            Launcher.open(target)
+        }
+    }
+
+    /// "action send": Enter in the frontmost app, and the prompt is done.
+    private func voiceSend() {
+        if terminalController?.parked == true {
+            vpLog("[App] action send ignored — parked")
+            return
+        }
+        if let buffered = dictationManager?.accumulatedText, !buffered.isEmpty {
+            vpLog("[App] action send discarding \(buffered.count) buffered chars")
+        }
+        dictationSuppressUntil = Date().addingTimeInterval(3.0)
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        wakeGate?.closeForSend()
+        terminalController?.pressKey(36, label: "Enter")
+    }
+
+    /// "action delete" / "action delete all". In a submit target the app-specific
+    /// clear (terminal line kill, Orca triple-click) knows best; anywhere else,
+    /// "delete" removes exactly what we typed and "delete all" selects the focused
+    /// field and deletes it.
+    private func voiceDelete(all: Bool) {
+        if terminalController?.parked == true {
+            vpLog("[App] action delete ignored — parked")
+            return
+        }
+        if terminalController?.isSubmitTarget == true {
+            terminalController?.clearLine(charactersTyped: dictationCurrentText.count)
+        } else if all {
+            terminalController?.deleteAllInFocusedField()
+        } else {
+            terminalController?.deleteTyped(dictationCurrentText.count)
+        }
+        dictationCurrentText = ""
+        dictationManager?.clear()
+        speechEngine?.currentTranscript = ""
+        vpLog("[App] action delete\(all ? " all" : ""): dictation state reset")
     }
 
     /// The listening window ended in silence, not "action send": wipe what it typed.
@@ -214,7 +271,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         vpLog("[App] window timed out — discarding \(dictationCurrentText.count) typed chars")
-        clearDictation()
+        voiceDelete(all: false)
     }
 
     /// "pilot" types out what was dictated while parked, once, ahead of the words that
