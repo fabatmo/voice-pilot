@@ -254,7 +254,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if terminalController?.isSubmitTarget == true {
-            terminalController?.clearLine(charactersTyped: dictationCurrentText.count)
+            terminalController?.voiceClearLine(charactersTyped: dictationCurrentText.count)
         } else if all {
             terminalController?.deleteAllInFocusedField()
         } else {

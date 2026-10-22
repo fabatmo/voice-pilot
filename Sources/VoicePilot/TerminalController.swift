@@ -292,6 +292,34 @@ class TerminalController: ObservableObject {
         vpLog("[TC] delete: \(n) Deletes in \(frontName)")
     }
 
+    /// The spoken "action delete all" — its own path, kept apart from the Clear
+    /// button's `clearLine` at Fabian's instruction (2026-10-22, after an experiment
+    /// here took the button down with it). The button's behaviour is the one he
+    /// relies on; this is where the Orca attempts go.
+    ///
+    /// Orca's prompt box is not a text field: the focused element is xterm.js's
+    /// hidden textarea ("Terminal input"), and what is drawn there is Claude Code's
+    /// own input line behind a pty. A terminal has no "delete the selection" — Delete
+    /// is one backspace to the program, whatever is highlighted — so the line can only
+    /// be cleared by the program's own key for it. Claude Code 2.1.308 binds ctrl+L to
+    /// chat:clearInput in its default Chat context. Escape would cancel the turn and
+    /// ctrl+C interrupts it; neither is an option.
+    func voiceClearLine(charactersTyped: Int) {
+        if isSubmitTarget, !frontmostIsTerminal, frontmostIsChromiumBased() {
+            enableChromiumAccessibilityForReading()
+            if focusedElementIsTerminalInput() {
+                runAppleScript("""
+                tell application "System Events"
+                    key code 37 using {control down}
+                end tell
+                """)
+                vpLog("[TC] voice delete all: ctrl+L (Claude Code clearInput) in \(frontName)")
+                return
+            }
+        }
+        clearLine(charactersTyped: charactersTyped)
+    }
+
     /// Wipes whatever is sitting on the terminal's current input line.
     ///
     /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,
@@ -333,35 +361,51 @@ class TerminalController: ObservableObject {
                 vpLog("[TC] clearLine: no focused text field — refusing to send select-all")
                 return
             }
-            // Orca's prompt box is not a text field. Found 2026-10-22 after AX
-            // selection, ⌘A + Delete and a triple-click had each removed one character:
-            // the focused element is xterm.js's hidden textarea ("Terminal input"), and
-            // what is drawn there is Claude Code's own input line, running behind a pty.
-            // A terminal has no "delete the selection" — Delete is one backspace to the
-            // program, whatever is highlighted. The only thing that clears the line is
-            // the program's own key for it: Claude Code 2.1.308 binds ctrl+L to
-            // chat:clearInput in its default Chat context (no ~/.claude/keybindings.json
-            // overrides it here). Escape would cancel the turn and ctrl+C interrupts it,
-            // so neither is an option.
-            if focusedElementIsTerminalInput() {
+            // Select through AX, delete with a real key.
+            //
+            // Selection is not React state — the component owns the value, not the
+            // caret — so AX can set the selected range where it cannot set the value.
+            // One real Delete then removes the selection and fires the input event
+            // React does listen for.
+            if selectAllViaAccessibility() {
                 runAppleScript("""
                 tell application "System Events"
-                    key code 37 using {control down}
+                    key code 51
                 end tell
                 """)
-                vpLog("[TC] clearLine: ctrl+L (Claude Code clearInput) in \(frontName)")
+                vpLog("[TC] clearLine: AX select-all + Delete")
                 return
             }
 
-            // A real text field in an Electron app: ⌘A then Delete as real keys, so
-            // React sees an input event.
-            runAppleScript("""
-            tell application "System Events"
-                key code 0 using {command down}
-                key code 51
-            end tell
-            """)
-            vpLog("[TC] clearLine: ⌘A + Delete in \(frontName)")
+            // Backspace, repeated, for exactly what we typed.
+            //
+            // Investigated 2026-09-30 rather than guessed at further. Orca's whole AX
+            // tree contains one editable element: 9x16 points, AXNumberOfCharacters 0,
+            // with its x-position tracking the caret. It captures keys through a hidden
+            // input and renders the text itself, so the text is not in the
+            // accessibility tree at all — no AX selection, value write or marker range
+            // can ever reach it, which is why four attempts through AX behaved
+            // erratically.
+            //
+            // That leaves the keyboard, and Delete is the one key observed to land
+            // every single time. VoicePilot knows exactly how many characters it put
+            // there, so it deletes that many. Deterministic, uses no modifier that an
+            // app can claim as a shortcut, and cannot escape the text field the way
+            // select-all can.
+            if tripleClickSelectAndDelete() {
+                vpLog("[TC] clearLine: triple-click select + Delete")
+                return
+            }
+
+            // Last resort: remove exactly what we typed. Only works when this app put
+            // the text there, so it is the fallback rather than the plan.
+            let count = charactersTyped
+            guard count > 0 else {
+                vpLog("[TC] clearLine: triple-click failed and nothing typed by us")
+                return
+            }
+            postBackspaces(count + 2)
+            vpLog("[TC] clearLine: \(count) backspaces")
             return
         }
 

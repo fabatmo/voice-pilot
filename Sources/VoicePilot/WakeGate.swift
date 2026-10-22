@@ -149,7 +149,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -203,7 +203,7 @@ final class WakeGate: ObservableObject {
         // file" is dictation.
         switch spoken.verb {
         case "open": return spoken.argument.isEmpty ? nil : spoken
-        case "delete all": return spoken
+        case "delete all", "clear", "clear all": return spoken
         default: return spoken.argument.isEmpty ? spoken : nil
         }
     }
@@ -212,7 +212,7 @@ final class WakeGate: ObservableObject {
         switch spoken.verb {
         case "send", "sent", "pass": return .send
         case "delete": return .delete
-        case "delete all": return .deleteAll
+        case "delete all", "clear", "clear all": return .deleteAll
         case "stop": return .stop
         case "mute": return .mute
         case "write": return .write
