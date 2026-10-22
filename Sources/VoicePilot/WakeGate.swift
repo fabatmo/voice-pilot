@@ -2,15 +2,20 @@ import Foundation
 import Combine
 
 /// Optional mode for when other people are in the room: nothing is typed until an
-/// utterance opens with the wake word, and the gate shuts again after 20 s without
-/// speech. Off (the default) is ordinary always-on dictation.
+/// utterance opens with the wake word, and the gate shuts again at the first pause
+/// longer than a breath, or when the prompt is sent. Off (the default) is ordinary
+/// always-on dictation.
 ///
 /// Speech that arrives while the gate is shut is dropped, not buffered — the point
 /// of the mode is that a conversation across the desk leaves no trace anywhere.
 final class WakeGate: ObservableObject {
     static let enabledKey = "wakeWordEnabled"
     static let word = "pilot"
-    static let idleWindow: TimeInterval = 20
+    /// Longest pause that keeps the gate open: a breath between sentences, not a turn
+    /// in a conversation. Was 20 s, which in a room with people never elapsed — on
+    /// 2026-10-22 one "pilot" let six other people's utterances through over 50 s,
+    /// because each arrived within 20 s of the last and kept the window alive.
+    static let idleWindow: TimeInterval = 4
 
     /// Whether the mode is on. Persisted; the floater button and the menu both flip it.
     @Published var enabled: Bool {
@@ -119,6 +124,12 @@ final class WakeGate: ObservableObject {
                 self?.checkIdle(generation: generation)
             }
         }
+    }
+
+    /// The prompt went off; whatever is said next is a new one and needs its own
+    /// "pilot". Wired to the same path as middle-click and the Send button.
+    func closeForSend() {
+        close(reason: "send")
     }
 
     private func close(reason: String) {

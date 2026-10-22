@@ -230,6 +230,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dictationCurrentText = ""
         dictationManager?.clear()
         speechEngine?.currentTranscript = ""
+        wakeGate?.closeForSend()
         terminalController?.pressEnter()
     }
 }
