@@ -12,9 +12,9 @@ import AppKit
 enum Media {
     static func perform(_ verb: String) {
         switch verb {
-        case "play music":
+        case "play music", "resume":
             mediaKey(.play, label: "play/pause")
-        case "pause music", "stop music":
+        case "pause music", "stop music", "pause":
             if let player = playingScriptablePlayer() {
                 appleScript(player, "pause")
             } else {
