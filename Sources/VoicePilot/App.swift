@@ -43,7 +43,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         wakeGate = WakeGate()
         wakeGate?.onOpened = { [weak self] in self?.flushParkBuffer() }
-        wakeGate?.onTimedOut = { [weak self] in self?.discardAfterSilence() }
+        // Silence only shuts the window; what it typed stays. The wipe that was here
+        // (4b0f064) took a message Fabian had paused on before saying "pass" — "it
+        // deletes my message" (2026-10-23). Clearing is a spoken command now.
+        wakeGate?.onTimedOut = { [weak self] in
+            vpLog("[App] window timed out — keeping \(self?.dictationCurrentText.count ?? 0) typed chars")
+        }
         // Partials open the gate the moment one begins with "pilot", and keep an open
         // gate open: the 20 s window runs from the last thing heard, not the last
         // final delivered.
@@ -266,18 +271,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         dictationManager?.clear()
         speechEngine?.currentTranscript = ""
         vpLog("[App] action delete\(all ? " all" : ""): dictation state reset")
-    }
-
-    /// The listening window ended in silence, not "action send": wipe what it typed.
-    /// Only when this app typed something since the last send or clear — otherwise
-    /// the triple-click-and-Delete would take text Fabian typed by hand.
-    private func discardAfterSilence() {
-        guard !dictationCurrentText.isEmpty else {
-            vpLog("[App] window timed out with nothing typed — nothing to discard")
-            return
-        }
-        vpLog("[App] window timed out — discarding \(dictationCurrentText.count) typed chars")
-        voiceDelete(all: false)
     }
 
     /// "pilot" types out what was dictated while parked, once, ahead of the words that
