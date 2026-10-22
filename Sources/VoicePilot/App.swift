@@ -20,9 +20,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var dictationManager: DictationManager?
     var parkZone: ParkZoneController?
     var windowKeeper: WindowKeeper?
+    var wakeGate: WakeGate?
 
     private var dictationCurrentText = ""
     private var dictationSuppressUntil: Date = .distantPast
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         vpLog("[App] applicationDidFinishLaunching")
@@ -39,10 +41,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleUtterance(utterance)
         }
 
+        wakeGate = WakeGate()
+        // Partials keep an open gate open: the 20 s window runs from the last thing
+        // heard, not the last final delivered.
+        speechEngine?.$currentTranscript
+            .filter { !$0.isEmpty }
+            .sink { [weak self] _ in self?.wakeGate?.noteActivity() }
+            .store(in: &cancellables)
+
         floatingPanel = FloatingPanelController(
             speechEngine: speechEngine!,
             terminalController: terminalController!,
-            dictationManager: dictationManager!
+            dictationManager: dictationManager!,
+            wakeGate: wakeGate!
         )
 
         parkZone = ParkZoneController(
@@ -81,6 +92,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar = StatusBarController(
             speechEngine: speechEngine!,
             parkZone: parkZone!,
+            wakeGate: wakeGate!,
             onBringToFront: { [weak self] in self?.windowKeeper?.recallNow() },
             onQuit: { NSApp.terminate(nil) },
             onShowWindow: { [weak self] in
@@ -140,8 +152,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !trimmed.isEmpty else { return }
         guard Date() > dictationSuppressUntil else { return }
 
-        let clean = trimmed.replacingOccurrences(of: "\n", with: " ")
-        guard !clean.isEmpty else { return }
+        let heard = trimmed.replacingOccurrences(of: "\n", with: " ")
+        guard !heard.isEmpty else { return }
+
+        // Wake word mode: drops speech outright while the gate is shut, and strips
+        // the "pilot" that opened it. Sits before parking so a shut gate never fills
+        // the park buffer either — nothing said across the desk is kept anywhere.
+        guard let clean = wakeGate?.admit(heard), !clean.isEmpty else { return }
 
         let toType = dictationCurrentText.isEmpty ? clean : " " + clean
         let delivered = terminalController?.typeText(toType) ?? false
