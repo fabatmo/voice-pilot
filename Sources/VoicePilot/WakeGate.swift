@@ -30,6 +30,8 @@ final class WakeGate: ObservableObject {
         case send
         /// Wipe the line — "action delete".
         case clear
+        /// Press Escape — "action stop".
+        case escape
         /// The gate swallowed it.
         case drop
     }
@@ -86,10 +88,11 @@ final class WakeGate: ObservableObject {
         scheduleClose()
     }
 
-    /// "action send" / "action delete" at the end of an utterance, with whatever
-    /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!".
+    /// "action send" / "action delete" / "action stop" at the end of an utterance,
+    /// with whatever punctuation the recogniser wrapped it in: "Action send.",
+    /// ", action, delete!".
     private static let command = try! NSRegularExpression(
-        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete)\\b[\\s.!?]*$",
+        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete|stop)\\b[\\s.!?]*$",
         options: .caseInsensitive
     )
 
@@ -113,6 +116,12 @@ final class WakeGate: ObservableObject {
         if command == "delete" {
             vpLog("[Gate] \"\(Self.actionWord) delete\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
             return .clear
+        }
+        // "action stop" is Escape: cancel whatever the app is doing. Words before it
+        // are dropped for the same reason — they were part of what is being stopped.
+        if command == "stop" {
+            vpLog("[Gate] \"\(Self.actionWord) stop\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
+            return .escape
         }
         let sends = command == "send"
 

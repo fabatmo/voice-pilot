@@ -236,6 +236,24 @@ class TerminalController: ObservableObject {
         runAppleScript(script)
     }
 
+    /// Escape in the frontmost app — "action stop". Same guard as Enter: a stray Escape
+    /// in a drawing app cancels whatever is mid-flight there.
+    func pressEscape() {
+        guard isSubmitTarget else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[TC] pressEscape ignored — \(front) is not a submit target")
+            return
+        }
+
+        let script = """
+        tell application "System Events"
+            key code 53
+        end tell
+        """
+        runAppleScript(script)
+        vpLog("[TC] pressed Escape")
+    }
+
     /// Wipes whatever is sitting on the terminal's current input line.
     ///
     /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,

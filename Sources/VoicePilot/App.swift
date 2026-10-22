@@ -158,9 +158,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard !heard.isEmpty else { return }
 
         // Wake word mode: drops speech outright while the gate is shut, strips the
-        // "pilot" that opened it, and turns "action send" / "action delete" into the
-        // Send and Clear buttons. Sits before parking so a shut gate never fills the
-        // park buffer either — nothing said across the desk is kept anywhere.
+        // "pilot" that opened it, and turns "action send" / "action delete" /
+        // "action stop" into Send, Clear and Escape. Sits before parking so a shut
+        // gate never fills the park buffer either — nothing said across the desk is
+        // kept anywhere.
         guard let gate = wakeGate else { return }
         switch gate.admit(heard) {
         case .drop:
@@ -169,6 +170,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             submitDictation()
         case .clear:
             clearDictation()
+        case .escape:
+            terminalController?.pressEscape()
         case .type(let clean):
             typeUtterance(clean)
         case .typeThenSend(let clean):
