@@ -246,12 +246,18 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
     @MainActor
     private func withoutInventedLeadingI(_ text: String) -> String {
-        guard !partialOpenedWithI else { return text }
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         let whole = NSRange(trimmed.startIndex..., in: trimmed)
         guard let run = Self.leadingIRun.firstMatch(in: trimmed, range: whole),
               let range = Range(run.range, in: trimmed) else { return text }
         let kept = String(trimmed[range.upperBound...])
+        // A final that is nothing but the run carries no words, whatever the partials
+        // opened with: three such finals reached the prompt between Oct 7 and Oct 21.
+        if kept.isEmpty {
+            vpLog("[Analyzer] dropped invented '\(trimmed[range])' — the whole final is the run")
+            return ""
+        }
+        guard !partialOpenedWithI else { return text }
         vpLog("[Analyzer] dropped invented '\(trimmed[range])' — no partial opened with I; keeping '\(kept.prefix(40))'")
         return kept
     }
