@@ -213,13 +213,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .stop:
             terminalController?.pressKey(53, label: "Escape")
         case .mute:
-            speechEngine?.stopListening()
+            // In pilot mode the gate went to sleep instead, mic on, so "hey pilot"
+            // can wake it. With the mode off there is nothing to wake: real mute.
+            if wakeGate?.enabled != true { speechEngine?.stopListening() }
         case .write:
             break   // the gate opened itself with the long window
         case .key(let code, let modifiers, let label):
             terminalController?.pressKey(code, modifiers: modifiers, label: label)
         case .open(let target):
             Launcher.open(target)
+        case .media(let verb):
+            Media.perform(verb)
         }
     }
 

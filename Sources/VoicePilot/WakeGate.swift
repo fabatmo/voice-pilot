@@ -23,15 +23,37 @@ final class WakeGate: ObservableObject {
     static let actionWord = "action"
 
     /// Longest silence that keeps the gate open, measured from the last thing heard.
-    /// Was 20 s; Fabian cut it to 10 on 2026-10-22 and made the timeout a cancel:
-    /// a window that ends in silence rather than "action send" leaves nothing behind.
-    static let silenceWindow: TimeInterval = 10
+    /// Was 20 s, then 10; Fabian asked for shorter again on 2026-10-22 evening, and
+    /// made the timeout a cancel: a window that ends in silence rather than "action
+    /// send" leaves nothing behind. "action write" is the way to get longer.
+    static let silenceWindow: TimeInterval = 6
     /// "action write": room to think. The window a composed prompt gets.
     static let writeWindow: TimeInterval = 60
 
     /// The window currently in force — `silenceWindow`, or `writeWindow` after
     /// "action write" until the gate next shuts.
     private(set) var idleWindow: TimeInterval = WakeGate.silenceWindow
+
+    /// True while the long "action write" window is in force. The card shows it in
+    /// orange where ordinary listening is green, so the mode is never a guess.
+    @Published private(set) var writing = false
+
+    /// Spoken "action mute" in pilot mode. The mic stays on — a muted mic could never
+    /// hear the wake-up — but everything is dropped, the wake word and commands
+    /// included, until "hey pilot". Fabian's remote-control idea, 2026-10-22: sleep,
+    /// then "hey pilot, action play music" from across the room. The mute button is
+    /// still a real mic-off.
+    @Published private(set) var sleeping = false
+
+    /// "hey pilot", "hi pilot", "okay pilot" — the only thing heard while asleep.
+    private static let wakeUp = try! NSRegularExpression(
+        pattern: "^\\W*(?:hey|hi|ok|okay)[\\s,]+pilot\\b",
+        options: .caseInsensitive
+    )
+
+    private static func wakesUp(_ text: String) -> Bool {
+        wakeUp.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
 
     /// A spoken "action …". The gate decides; AppDelegate carries it out.
     enum Command: Equatable {
@@ -52,6 +74,8 @@ final class WakeGate: ObservableObject {
         case key(code: Int, modifiers: [String], label: String)
         /// Launch an app, folder or file by spoken name — "action open Illustrator".
         case open(String)
+        /// Music transport — "action play music", "action next song".
+        case media(String)
     }
 
     /// What to do with a final.
@@ -72,7 +96,10 @@ final class WakeGate: ObservableObject {
             guard enabled != oldValue else { return }
             UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
             vpLog("[Gate] wake word mode \(enabled ? "on" : "off")")
-            if !enabled { close(reason: "mode switched off") }
+            if !enabled {
+                close(reason: "mode switched off")
+                sleeping = false
+            }
         }
     }
 
@@ -121,7 +148,7 @@ final class WakeGate: ObservableObject {
     )
 
     /// Spoken verbs, longest first so "delete all" wins over "delete".
-    private static let verbs = "send|delete all|delete|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open"
+    private static let verbs = "send|delete all|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -191,6 +218,7 @@ final class WakeGate: ObservableObject {
         case "save": return .key(code: 1, modifiers: ["command"], label: "⌘S")
         case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
+        case "play music", "pause music", "stop music", "next song", "previous song": return .media(spoken.verb)
         default: return .open(spoken.argument)
         }
     }
@@ -221,6 +249,11 @@ final class WakeGate: ObservableObject {
     /// words still land when the recogniser finalises.
     func notePartial(_ text: String) {
         noteActivity()
+        if sleeping {
+            guard Self.wakesUp(text) else { return }
+            vpLog("[Gate] \"hey \(Self.word)\" in a partial — awake")
+            onMain { self.sleeping = false }
+        }
         guard enabled, !open, Self.openerRange(in: text) != nil else { return }
         provisional = true
         vpLog("[Gate] opened by \"\(Self.word)\" in a partial — awaiting the final")
@@ -233,7 +266,7 @@ final class WakeGate: ObservableObject {
     /// form — words in front of it are not final yet and have to be typed first — and
     /// never "open", whose target is still being spoken.
     func immediateCommand(in partial: String) -> Command? {
-        guard !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, spoken.verb != "open" else { return nil }
+        guard !sleeping, !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, spoken.verb != "open" else { return nil }
         partialCommandFired = true
         let command = Self.command(for: spoken)
         vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\" in a partial — executing now")
@@ -248,6 +281,15 @@ final class WakeGate: ObservableObject {
         let firedEarly = partialCommandFired
         partialCommandFired = false
         noteActivity()
+
+        if sleeping {
+            guard Self.wakesUp(text) else {
+                vpLog("[Gate] asleep — dropped '\(text.prefix(60))'")
+                return .drop
+            }
+            vpLog("[Gate] \"hey \(Self.word)\" — awake")
+            onMain { self.sleeping = false }
+        }
 
         let spoken = Self.parse(text)
         let body = spoken?.body ?? text
@@ -331,15 +373,21 @@ final class WakeGate: ObservableObject {
         switch command {
         case .delete, .deleteAll: close(reason: "delete")
         case .stop: close(reason: "stop")
-        case .mute: close(reason: "mute")
+        case .mute:
+            close(reason: "mute")
+            if enabled {
+                vpLog("[Gate] asleep — say \"hey \(Self.word)\" to wake")
+                onMain { self.sleeping = true }
+            }
         case .write:
             guard enabled else { return }
             idleWindow = Self.writeWindow
             provisional = false
             vpLog("[Gate] \"\(Self.actionWord) write\" — open for \(Int(Self.writeWindow)) s of silence")
             setOpen(true)
+            onMain { self.writing = true }
             scheduleClose()
-        case .send, .key, .open: break
+        case .send, .key, .open, .media: break
         }
     }
 
@@ -381,14 +429,19 @@ final class WakeGate: ObservableObject {
         provisional = false
         vpLog("[Gate] closed after \(reason) — say \"\(Self.word)\" to dictate")
         setOpen(false)
+        onMain { self.writing = false }
+    }
+
+    private func setOpen(_ value: Bool) {
+        onMain { self.open = value }
     }
 
     /// Finals from the legacy backend arrive off the main thread; @Published must not.
-    private func setOpen(_ value: Bool) {
+    private func onMain(_ work: @escaping () -> Void) {
         if Thread.isMainThread {
-            open = value
+            work()
         } else {
-            DispatchQueue.main.sync { self.open = value }
+            DispatchQueue.main.sync(execute: work)
         }
     }
 }
