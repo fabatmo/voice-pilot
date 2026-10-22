@@ -119,6 +119,14 @@ final class WakeGate: ObservableObject {
         options: .caseInsensitive
     )
 
+    /// The wake word and a verb with nothing else — "Pilot send." — is the command
+    /// too. Fabian said it that way three times on 2026-10-22 and got "send." typed;
+    /// "pilot, send the file" is still words, because something follows the verb.
+    private static let bareCommand = try! NSRegularExpression(
+        pattern: "^\\W*(?:(?:uh|um|uh-huh|hmm|hm|okay|ok|yeah|so|and|hey|voice)[\\s,.!?-]+)*pilot\\b[\\s,.]+(send|delete|stop|mute)\\b[\\s.!?]*$",
+        options: .caseInsensitive
+    )
+
     /// What to do with a final.
     func admit(_ text: String) -> Verdict {
         guard enabled else { return .type(text) }
@@ -127,9 +135,13 @@ final class WakeGate: ObservableObject {
         var body = text
         var command: String?
         let whole = NSRange(body.startIndex..., in: body)
-        if let match = Self.command.firstMatch(in: body, range: whole),
-           let range = Range(match.range, in: body),
+        if let match = Self.bareCommand.firstMatch(in: body, range: whole),
            let verb = Range(match.range(at: 1), in: body) {
+            command = body[verb].lowercased()
+            body = ""
+        } else if let match = Self.command.firstMatch(in: body, range: whole),
+                  let range = Range(match.range, in: body),
+                  let verb = Range(match.range(at: 1), in: body) {
             command = body[verb].lowercased()
             body = String(body[..<range.lowerBound])
         }
