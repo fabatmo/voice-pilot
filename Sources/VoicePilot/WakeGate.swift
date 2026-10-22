@@ -1,20 +1,19 @@
 import Foundation
 import Combine
 
-/// Optional mode for when other people are in the room: nothing is typed until an
-/// utterance opens with the wake word, and the gate shuts again at the first pause
-/// longer than a breath, or when the prompt is sent. Off (the default) is ordinary
-/// always-on dictation.
+/// Optional mode for when other people are in the room: only an utterance that opens
+/// with the wake word is typed, minus the word, and the gate shuts behind it. Off
+/// (the default) is ordinary always-on dictation.
 ///
 /// Speech that arrives while the gate is shut is dropped, not buffered — the point
 /// of the mode is that a conversation across the desk leaves no trace anywhere.
 final class WakeGate: ObservableObject {
     static let enabledKey = "wakeWordEnabled"
     static let word = "pilot"
-    /// Longest pause that keeps the gate open: a breath between sentences, not a turn
-    /// in a conversation. Was 20 s, which in a room with people never elapsed — on
-    /// 2026-10-22 one "pilot" let six other people's utterances through over 50 s,
-    /// because each arrived within 20 s of the last and kept the window alive.
+    /// Safety for a gate opened by a partial whose final never comes: shut it after
+    /// this much silence. (Was the continuation window — 20 s, then 4 s — before the
+    /// one-utterance rule: on 2026-10-22 one "pilot" let six other people's utterances
+    /// through over 50 s, each arriving within the window and keeping it alive.)
     static let idleWindow: TimeInterval = 4
 
     /// Whether the mode is on. Persisted; the floater button and the menu both flip it.
@@ -79,21 +78,21 @@ final class WakeGate: ObservableObject {
            let range = Range(match.range, in: text) {
             let rest = String(text[range.upperBound...])
             vpLog("[Gate] opened by \"\(Self.word)\"\(provisional ? " (confirmed)" : "") — delivering '\(rest.prefix(60))'")
+            // One utterance per wake word: the sentence that starts with "pilot" is
+            // typed and the gate shuts behind it. Chosen 2026-10-22 after the pause
+            // rule still let a reply land within the 4 s gap. Every sentence needs the
+            // word; nothing anyone else says can ride on it.
             provisional = false
-            setOpen(true)
-            scheduleClose()
+            setOpen(false)
             return rest
         }
 
-        if open {
-            if provisional {
-                // The partial that opened the gate finalised as something else.
-                provisional = false
-                vpLog("[Gate] partial opening not confirmed by the final — dropped '\(text.prefix(60))'")
-                setOpen(false)
-                return nil
-            }
-            return text
+        if open && provisional {
+            // The partial that opened the gate finalised as something else.
+            provisional = false
+            vpLog("[Gate] partial opening not confirmed by the final — dropped '\(text.prefix(60))'")
+            setOpen(false)
+            return nil
         }
         vpLog("[Gate] closed — dropped '\(text.prefix(60))'")
         return nil
