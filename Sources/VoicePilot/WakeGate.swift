@@ -1,20 +1,38 @@
 import Foundation
 import Combine
 
-/// Optional mode for when other people are in the room: only an utterance that opens
-/// with the wake word is typed, minus the word, and the gate shuts behind it. Off
-/// (the default) is ordinary always-on dictation.
+/// Optional mode for when other people are in the room: nothing is typed until an
+/// utterance opens with the wake word; the gate then stays open across pauses up to
+/// `idleWindow`, and "action send" submits the prompt and shuts it. Off (the default)
+/// is ordinary always-on dictation.
 ///
 /// Speech that arrives while the gate is shut is dropped, not buffered — the point
 /// of the mode is that a conversation across the desk leaves no trace anywhere.
+/// While it is open, the gate cannot tell voices apart: on 2026-10-22 one "pilot"
+/// let six other people's utterances through in 50 s. Fabian chose 20 s with
+/// a spoken end over the one-utterance rule tried in between. The command carries
+/// its own prefix, "action", so it is never mistaken for the wake word opening a
+/// sentence that happens to start with "send".
 final class WakeGate: ObservableObject {
     static let enabledKey = "wakeWordEnabled"
     static let word = "pilot"
-    /// Safety for a gate opened by a partial whose final never comes: shut it after
-    /// this much silence. (Was the continuation window — 20 s, then 4 s — before the
-    /// one-utterance rule: on 2026-10-22 one "pilot" let six other people's utterances
-    /// through over 50 s, each arriving within the window and keeping it alive.)
-    static let idleWindow: TimeInterval = 4
+    static let actionWord = "action"
+    /// Longest silence that keeps the gate open, measured from the last thing heard.
+    static let idleWindow: TimeInterval = 20
+
+    /// What to do with a final.
+    enum Verdict {
+        /// Type this (possibly empty, when the utterance was just the wake word).
+        case type(String)
+        /// Type this, then submit — "… action send" at the end of a sentence.
+        case typeThenSend(String)
+        /// Submit what has been typed — "action send" on its own.
+        case send
+        /// Wipe the line — "action delete".
+        case clear
+        /// The gate swallowed it.
+        case drop
+    }
 
     /// Whether the mode is on. Persisted; the floater button and the menu both flip it.
     @Published var enabled: Bool {
@@ -68,34 +86,73 @@ final class WakeGate: ObservableObject {
         scheduleClose()
     }
 
-    /// What to deliver from a final, or nil when the gate swallowed it.
-    func admit(_ text: String) -> String? {
-        guard enabled else { return text }
+    /// "action send" / "action delete" at the end of an utterance, with whatever
+    /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!".
+    private static let command = try! NSRegularExpression(
+        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete)\\b[\\s.!?]*$",
+        options: .caseInsensitive
+    )
+
+    /// What to do with a final.
+    func admit(_ text: String) -> Verdict {
+        guard enabled else { return .type(text) }
         noteActivity()
 
-        let whole = NSRange(text.startIndex..., in: text)
-        if let match = Self.opener.firstMatch(in: text, range: whole),
-           let range = Range(match.range, in: text) {
-            let rest = String(text[range.upperBound...])
-            vpLog("[Gate] opened by \"\(Self.word)\"\(provisional ? " (confirmed)" : "") — delivering '\(rest.prefix(60))'")
-            // One utterance per wake word: the sentence that starts with "pilot" is
-            // typed and the gate shuts behind it. Chosen 2026-10-22 after the pause
-            // rule still let a reply land within the 4 s gap. Every sentence needs the
-            // word; nothing anyone else says can ride on it.
-            provisional = false
-            setOpen(false)
-            return rest
+        var body = text
+        var command: String?
+        let whole = NSRange(body.startIndex..., in: body)
+        if let match = Self.command.firstMatch(in: body, range: whole),
+           let range = Range(match.range, in: body),
+           let verb = Range(match.range(at: 1), in: body) {
+            command = body[verb].lowercased()
+            body = String(body[..<range.lowerBound])
         }
 
-        if open && provisional {
-            // The partial that opened the gate finalised as something else.
+        // "action delete" wipes the line; words spoken before it in the same breath
+        // would be typed and wiped again, so they are dropped instead.
+        if command == "delete" {
+            vpLog("[Gate] \"\(Self.actionWord) delete\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
+            return .clear
+        }
+        let sends = command == "send"
+
+        let bodyRange = NSRange(body.startIndex..., in: body)
+        if let match = Self.opener.firstMatch(in: body, range: bodyRange),
+           let range = Range(match.range, in: body) {
+            let rest = String(body[range.upperBound...])
+            vpLog("[Gate] opened by \"\(Self.word)\"\(provisional ? " (confirmed)" : "") — delivering '\(rest.prefix(60))'\(sends ? " then send" : "")")
             provisional = false
-            vpLog("[Gate] partial opening not confirmed by the final — dropped '\(text.prefix(60))'")
-            setOpen(false)
-            return nil
+            setOpen(true)
+            scheduleClose()
+            return sends ? .typeThenSend(rest) : .type(rest)
+        }
+
+        if sends {
+            // "action send" on its own, or ending a sentence spoken while open.
+            if body.trimmingCharacters(in: .whitespaces).isEmpty {
+                vpLog("[Gate] \"\(Self.actionWord) send\"")
+                return .send
+            }
+            if open && !provisional {
+                vpLog("[Gate] open — delivering '\(body.prefix(60))' then send")
+                return .typeThenSend(body)
+            }
+            vpLog("[Gate] \"\(Self.actionWord) send\" — dropping the words before it, gate was shut: '\(body.prefix(60))'")
+            return .send
+        }
+
+        if open {
+            if provisional {
+                // The partial that opened the gate finalised as something else.
+                provisional = false
+                vpLog("[Gate] partial opening not confirmed by the final — dropped '\(text.prefix(60))'")
+                setOpen(false)
+                return .drop
+            }
+            return .type(text)
         }
         vpLog("[Gate] closed — dropped '\(text.prefix(60))'")
-        return nil
+        return .drop
     }
 
     private static func opens(_ text: String) -> Bool {

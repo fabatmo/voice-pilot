@@ -157,17 +157,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let heard = trimmed.replacingOccurrences(of: "\n", with: " ")
         guard !heard.isEmpty else { return }
 
-        // Wake word mode: drops speech outright while the gate is shut, and strips
-        // the "pilot" that opened it. Sits before parking so a shut gate never fills
-        // the park buffer either — nothing said across the desk is kept anywhere.
-        guard let clean = wakeGate?.admit(heard), !clean.isEmpty else { return }
+        // Wake word mode: drops speech outright while the gate is shut, strips the
+        // "pilot" that opened it, and turns "action send" / "action delete" into the
+        // Send and Clear buttons. Sits before parking so a shut gate never fills the
+        // park buffer either — nothing said across the desk is kept anywhere.
+        guard let gate = wakeGate else { return }
+        switch gate.admit(heard) {
+        case .drop:
+            return
+        case .send:
+            submitDictation()
+        case .clear:
+            clearDictation()
+        case .type(let clean):
+            typeUtterance(clean)
+        case .typeThenSend(let clean):
+            typeUtterance(clean)
+            // The paste has to land before Enter. Orca takes the clipboard a beat
+            // after the keystroke; Enter on its heels would submit the previous text.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.submitDictation()
+            }
+        }
+    }
 
+    private func typeUtterance(_ clean: String) {
+        guard !clean.isEmpty else { return }
         let toType = dictationCurrentText.isEmpty ? clean : " " + clean
         let delivered = terminalController?.typeText(toType) ?? false
         if delivered {
             dictationCurrentText += toType
         } else {
-            dictationManager?.appendUtterance(text)
+            dictationManager?.appendUtterance(clean)
         }
     }
 
