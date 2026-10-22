@@ -16,12 +16,14 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, Win
     private var speechEngine: SpeechEngine
     private var terminalController: TerminalController
     private var dictationManager: DictationManager
+    private var wakeGate: WakeGate
     @Published var isMini = true
 
-    init(speechEngine: SpeechEngine, terminalController: TerminalController, dictationManager: DictationManager) {
+    init(speechEngine: SpeechEngine, terminalController: TerminalController, dictationManager: DictationManager, wakeGate: WakeGate) {
         self.speechEngine = speechEngine
         self.terminalController = terminalController
         self.dictationManager = dictationManager
+        self.wakeGate = wakeGate
         super.init()
         showWindow()
     }
@@ -31,6 +33,7 @@ class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegate, Win
             speechEngine: speechEngine,
             terminalController: terminalController,
             dictationManager: dictationManager,
+            wakeGate: wakeGate,
             panelController: self
         )
         .preferredColorScheme(.dark)
@@ -152,6 +155,7 @@ struct MainView: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var terminalController: TerminalController
     @ObservedObject var dictationManager: DictationManager
+    @ObservedObject var wakeGate: WakeGate
     @ObservedObject var panelController: FloatingPanelController
 
     let bg = Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0))
@@ -162,7 +166,8 @@ struct MainView: View {
                 MiniContent(
                     speechEngine: speechEngine,
                     dictationManager: dictationManager,
-                    terminalController: terminalController
+                    terminalController: terminalController,
+                    wakeGate: wakeGate
                 )
             } else {
                 DictationContent(
@@ -183,11 +188,18 @@ struct MiniContent: View {
     @ObservedObject var speechEngine: SpeechEngine
     @ObservedObject var dictationManager: DictationManager
     @ObservedObject var terminalController: TerminalController
+    @ObservedObject var wakeGate: WakeGate
 
-    /// Amber while parked, so the state is never invisible — the pointer resting here
-    /// silently stopping delivery would otherwise look like a broken app.
+    /// Wake word mode with the gate shut: heard, but nothing typed until "pilot".
+    private var waitingForWakeWord: Bool {
+        wakeGate.enabled && !wakeGate.open && speechEngine.isListening
+    }
+
+    /// Amber while parked, blue while waiting for the wake word — neither state may be
+    /// invisible: silently not typing would otherwise look like a broken app.
     private var statusColor: Color {
         if terminalController.parked { return .orange }
+        if waitingForWakeWord { return .blue }
         return speechEngine.isListening ? .green : .red
     }
 
@@ -203,12 +215,16 @@ struct MiniContent: View {
                 if !speechEngine.currentTranscript.isEmpty {
                     Text(speechEngine.currentTranscript)
                         .font(.system(size: 12))
-                        .foregroundColor(.white)
+                        .foregroundColor(waitingForWakeWord ? Color.white.opacity(0.4) : .white)
                         .lineLimit(2)
                 } else if terminalController.parked {
                     Text("Parked — buffering, not typing")
                         .font(.system(size: 12))
                         .foregroundColor(.orange)
+                } else if waitingForWakeWord {
+                    Text("Say “pilot” to dictate")
+                        .font(.system(size: 12))
+                        .foregroundColor(.blue)
                 } else {
                     Text(speechEngine.isListening ? "Dictating..." : "Paused")
                         .font(.system(size: 12))

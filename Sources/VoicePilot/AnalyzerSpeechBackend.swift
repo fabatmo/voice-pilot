@@ -40,7 +40,9 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
     /// Last finalized segment, to guard against an identical repeat delivery.
     /// Finalized results arrive as distinct contiguous segments, not cumulatively.
-    private var lastFinalizedSegment = ""
+    /// Audio position of the last delivered final. A re-emitted segment starts at the
+    /// same point; the same words said again start later and must go through.
+    private var lastFinalStart: Double = -1
 
     /// Whether any live partial of the segment being spoken began with "I".
     ///
@@ -228,7 +230,10 @@ final class AnalyzerSpeechBackend: SpeechBackend {
 
                     await MainActor.run {
                         if isFinal {
-                            self.deliverFinal(self.withoutInventedLeadingI(text))
+                            self.deliverFinal(
+                                self.withoutInventedLeadingI(text),
+                                start: CMTimeGetSeconds(result.range.start)
+                            )
                             self.partialOpenedWithI = false
                         } else {
                             if text.trimmingCharacters(in: .whitespaces).hasPrefix("I") {
@@ -263,14 +268,18 @@ final class AnalyzerSpeechBackend: SpeechBackend {
     }
 
     @MainActor
-    private func deliverFinal(_ text: String) {
+    private func deliverFinal(_ text: String, start: Double) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard trimmed != lastFinalizedSegment else {
-            vpLog("[Analyzer] dropped duplicate segment: '\(trimmed.prefix(40))'")
+        // Keyed on audio position, not words. The text comparison this replaced
+        // dropped 85 finals in three weeks — every one of them new speech ("Okay."
+        // ×20, "Try again." ×3, the second "Pilot test." of the wake word trial) and
+        // not a single actual re-emission.
+        guard abs(start - lastFinalStart) > 0.05 else {
+            vpLog("[Analyzer] dropped re-emitted segment at \(start)s: '\(trimmed.prefix(40))'")
             return
         }
-        lastFinalizedSegment = trimmed
+        lastFinalStart = start
         vpLog("[Analyzer] deliver: '\(trimmed.prefix(80))'")
         onUtterance?(trimmed)
     }

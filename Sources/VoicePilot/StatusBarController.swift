@@ -6,6 +6,7 @@ class StatusBarController {
     private var statusItem: NSStatusItem
     private var speechEngine: SpeechEngine
     private var parkZone: ParkZoneController
+    private var wakeGate: WakeGate
     private var onBringToFront: () -> Void
     private var onQuit: () -> Void
     private var onShowWindow: () -> Void
@@ -14,12 +15,14 @@ class StatusBarController {
     init(
         speechEngine: SpeechEngine,
         parkZone: ParkZoneController,
+        wakeGate: WakeGate,
         onBringToFront: @escaping () -> Void,
         onQuit: @escaping () -> Void,
         onShowWindow: @escaping () -> Void
     ) {
         self.speechEngine = speechEngine
         self.parkZone = parkZone
+        self.wakeGate = wakeGate
         self.onBringToFront = onBringToFront
         self.onQuit = onQuit
         self.onShowWindow = onShowWindow
@@ -100,6 +103,15 @@ class StatusBarController {
         panelHoverItem.target = self
         menu.addItem(panelHoverItem)
 
+        let wakeWordItem = NSMenuItem(
+            title: "Wake Word “\(WakeGate.word)”  (people in the room)",
+            action: #selector(toggleWakeWord),
+            keyEquivalent: ""
+        )
+        wakeWordItem.state = wakeGate.enabled ? .on : .off
+        wakeWordItem.target = self
+        menu.addItem(wakeWordItem)
+
         menu.addItem(.separator())
 
         let engineLabel = NSMenuItem(
@@ -155,6 +167,11 @@ class StatusBarController {
         let next = !FloatingPanelController.panelHoverEnabled
         UserDefaults.standard.set(next, forKey: FloatingPanelController.panelHoverKey)
         vpLog("[StatusBar] park on panel hover = \(next)")
+    }
+
+    /// Same switch as the Pilot button on the park zone card.
+    @objc private func toggleWakeWord() {
+        wakeGate.enabled.toggle()
     }
 
     /// Engines are chosen at launch, so switching relaunches the process.
