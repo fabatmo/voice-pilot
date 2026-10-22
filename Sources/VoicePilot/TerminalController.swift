@@ -292,6 +292,43 @@ class TerminalController: ObservableObject {
         vpLog("[TC] delete: \(n) Deletes in \(frontName)")
     }
 
+    /// The spoken "action delete all" — its own path, kept apart from the Clear
+    /// button's `clearLine` at Fabian's instruction (2026-10-22, after an experiment
+    /// here took the button down with it). The button's behaviour is the one he
+    /// relies on; this is where the Orca attempts go.
+    ///
+    /// Orca's prompt box is not a text field: the focused element is xterm.js's
+    /// hidden textarea ("Terminal input"), and what is drawn there is Claude Code's
+    /// own input line behind a pty. A terminal has no "delete the selection" — Delete
+    /// is one backspace to the program, whatever is highlighted — so the line can only
+    /// be cleared by the program's own line-editing keys. Read from the Claude Code
+    /// 2.1.308 binary: its prompt editor handles ctrl+K (deleteToLineEnd) and ctrl+U
+    /// (deleteToLineStart) itself; "ctrl+L" there is the same handler as clearScreen
+    /// and clears nothing, and Fabian's keyboard test agreed on both (2026-10-22:
+    /// ctrl+L no, ctrl+U yes). K then U clear the current line whatever the cursor
+    /// position; Backspace at the start of an emptied line joins it to the one above,
+    /// so a few rounds take a multi-line prompt too. All three are no-ops on an empty
+    /// prompt. Escape would cancel the turn and ctrl+C interrupts it; neither is used.
+    func voiceClearLine(charactersTyped: Int) {
+        if isSubmitTarget, !frontmostIsTerminal, frontmostIsChromiumBased() {
+            enableChromiumAccessibilityForReading()
+            if focusedElementIsTerminalInput() {
+                runAppleScript("""
+                tell application "System Events"
+                    repeat 4 times
+                        key code 40 using {control down}
+                        key code 32 using {control down}
+                        key code 51
+                    end repeat
+                end tell
+                """)
+                vpLog("[TC] voice delete all: 4 × (ctrl+K, ctrl+U, Backspace) in \(frontName)")
+                return
+            }
+        }
+        clearLine(charactersTyped: charactersTyped)
+    }
+
     /// Wipes whatever is sitting on the terminal's current input line.
     ///
     /// Ctrl+E then Ctrl+U, not Ctrl+U alone: in bash Ctrl+U is unix-line-discard,
@@ -1028,6 +1065,22 @@ class TerminalController: ObservableObject {
         }
 
         return false
+    }
+
+    /// Whether the focused element is an xterm.js input — a terminal drawn in a web
+    /// view. Orca's prompt box is one (AXDescription "Terminal input", DOM class
+    /// xterm-helper-textarea, 8x16 pt, AXNumberOfCharacters 0): the text lives in the
+    /// program behind the pty, not in any text field, so selection has no meaning
+    /// there and only the program's own line-editing keys can clear it.
+    private func focusedElementIsTerminalInput() -> Bool {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
+        var focused: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute as CFString, &focused
+        ) == .success, let ref = focused else { return false }
+        var classes: AnyObject?
+        AXUIElementCopyAttributeValue(ref as! AXUIElement, "AXDOMClassList" as CFString, &classes)
+        return (classes as? [String])?.contains("xterm-helper-textarea") ?? false
     }
 
     private func isWritableText(_ element: AXUIElement) -> Bool {
