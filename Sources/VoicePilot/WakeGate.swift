@@ -3,17 +3,20 @@ import Combine
 
 /// Optional mode for when other people are in the room: nothing is typed until an
 /// utterance opens with the wake word; the gate then stays open across pauses up to
-/// `idleWindow`, and "pilot send" submits the prompt and shuts it. Off (the default)
+/// `idleWindow`, and "action send" submits the prompt and shuts it. Off (the default)
 /// is ordinary always-on dictation.
 ///
 /// Speech that arrives while the gate is shut is dropped, not buffered — the point
 /// of the mode is that a conversation across the desk leaves no trace anywhere.
 /// While it is open, the gate cannot tell voices apart: on 2026-10-22 one "pilot"
 /// let six other people's utterances through in 50 s. Fabian chose 20 s with
-/// "pilot send" as the explicit end over the one-utterance rule tried in between.
+/// a spoken end over the one-utterance rule tried in between. The command carries
+/// its own prefix, "action", so it is never mistaken for the wake word opening a
+/// sentence that happens to start with "send".
 final class WakeGate: ObservableObject {
     static let enabledKey = "wakeWordEnabled"
     static let word = "pilot"
+    static let actionWord = "action"
     /// Longest silence that keeps the gate open, measured from the last thing heard.
     static let idleWindow: TimeInterval = 20
 
@@ -21,10 +24,12 @@ final class WakeGate: ObservableObject {
     enum Verdict {
         /// Type this (possibly empty, when the utterance was just the wake word).
         case type(String)
-        /// Type this, then submit — "… pilot send" at the end of a sentence.
+        /// Type this, then submit — "… action send" at the end of a sentence.
         case typeThenSend(String)
-        /// Submit what has been typed — "pilot send" on its own.
+        /// Submit what has been typed — "action send" on its own.
         case send
+        /// Wipe the line — "action delete".
+        case clear
         /// The gate swallowed it.
         case drop
     }
@@ -81,10 +86,10 @@ final class WakeGate: ObservableObject {
         scheduleClose()
     }
 
-    /// "pilot send" at the end of an utterance, with whatever punctuation the
-    /// recogniser wrapped it in: "Pilot send.", ", pilot, send!", "Pilot send?".
-    private static let sender = try! NSRegularExpression(
-        pattern: "[\\s,.;:]*\\bpilot\\b[\\s,]+send\\b[\\s.!?]*$",
+    /// "action send" / "action delete" at the end of an utterance, with whatever
+    /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!".
+    private static let command = try! NSRegularExpression(
+        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete)\\b[\\s.!?]*$",
         options: .caseInsensitive
     )
 
@@ -94,13 +99,22 @@ final class WakeGate: ObservableObject {
         noteActivity()
 
         var body = text
-        var sends = false
+        var command: String?
         let whole = NSRange(body.startIndex..., in: body)
-        if let match = Self.sender.firstMatch(in: body, range: whole),
-           let range = Range(match.range, in: body) {
+        if let match = Self.command.firstMatch(in: body, range: whole),
+           let range = Range(match.range, in: body),
+           let verb = Range(match.range(at: 1), in: body) {
+            command = body[verb].lowercased()
             body = String(body[..<range.lowerBound])
-            sends = true
         }
+
+        // "action delete" wipes the line; words spoken before it in the same breath
+        // would be typed and wiped again, so they are dropped instead.
+        if command == "delete" {
+            vpLog("[Gate] \"\(Self.actionWord) delete\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
+            return .clear
+        }
+        let sends = command == "send"
 
         let bodyRange = NSRange(body.startIndex..., in: body)
         if let match = Self.opener.firstMatch(in: body, range: bodyRange),
@@ -114,16 +128,16 @@ final class WakeGate: ObservableObject {
         }
 
         if sends {
-            // "pilot send" on its own, or ending a sentence spoken while open.
+            // "action send" on its own, or ending a sentence spoken while open.
             if body.trimmingCharacters(in: .whitespaces).isEmpty {
-                vpLog("[Gate] \"\(Self.word) send\"")
+                vpLog("[Gate] \"\(Self.actionWord) send\"")
                 return .send
             }
             if open && !provisional {
                 vpLog("[Gate] open — delivering '\(body.prefix(60))' then send")
                 return .typeThenSend(body)
             }
-            vpLog("[Gate] \"\(Self.word) send\" — dropping the words before it, gate was shut: '\(body.prefix(60))'")
+            vpLog("[Gate] \"\(Self.actionWord) send\" — dropping the words before it, gate was shut: '\(body.prefix(60))'")
             return .send
         }
 
