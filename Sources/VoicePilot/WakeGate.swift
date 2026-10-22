@@ -149,13 +149,16 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|delete all|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song"
+    private static let verbs = "send|sent|pass|delete all|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
     /// "action open Photoshop".
+    ///
+    /// "pass" alone at the end is "action send" — Fabian's shorthand (2026-10-22):
+    /// "… and that's it, pass." Only as the last word; "pass the file" is dictation.
     private static let command = try! NSRegularExpression(
-        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(\(verbs))\\b(?:[\\s,]+(.+?))?[\\s.!?]*$",
+        pattern: "[\\s,.;:]*\\b(?:action\\b[\\s,]+(\(verbs))|(pass))\\b(?:[\\s,]+(.+?))?[\\s.!?]*$",
         options: .caseInsensitive
     )
 
@@ -172,6 +175,10 @@ final class WakeGate: ObservableObject {
         let verb: String
         let argument: String
         let body: String
+        /// A lone "pass" with no "action" or "pilot" before it. Never run from a
+        /// partial: partials arrive letter by letter, and "pass" is how "passport"
+        /// and "passed" begin.
+        var shorthand = false
         var bare: Bool { body.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
@@ -183,10 +190,11 @@ final class WakeGate: ObservableObject {
             let argument = Range(match.range(at: 2), in: text).map { String(text[$0]) } ?? ""
             spoken = Spoken(verb: text[verb].lowercased(), argument: argument, body: "")
         } else if let match = command.firstMatch(in: text, range: whole),
-                  let range = Range(match.range, in: text),
-                  let verb = Range(match.range(at: 1), in: text) {
-            let argument = Range(match.range(at: 2), in: text).map { String(text[$0]) } ?? ""
-            spoken = Spoken(verb: text[verb].lowercased(), argument: argument, body: String(text[..<range.lowerBound]))
+                  let range = Range(match.range, in: text) {
+            let shorthand = match.range(at: 1).location == NSNotFound
+            let verb = Range(match.range(at: shorthand ? 2 : 1), in: text).map { text[$0].lowercased() } ?? "pass"
+            let argument = Range(match.range(at: 3), in: text).map { String(text[$0]) } ?? ""
+            spoken = Spoken(verb: verb, argument: argument, body: String(text[..<range.lowerBound]), shorthand: shorthand)
         } else {
             return nil
         }
@@ -202,7 +210,7 @@ final class WakeGate: ObservableObject {
 
     private static func command(for spoken: Spoken) -> Command {
         switch spoken.verb {
-        case "send", "sent": return .send
+        case "send", "sent", "pass": return .send
         case "delete": return .delete
         case "delete all": return .deleteAll
         case "stop": return .stop
@@ -267,7 +275,7 @@ final class WakeGate: ObservableObject {
     /// form — words in front of it are not final yet and have to be typed first — and
     /// never "open", whose target is still being spoken.
     func immediateCommand(in partial: String) -> Command? {
-        guard !sleeping, !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, spoken.verb != "open" else { return nil }
+        guard !sleeping, !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, !spoken.shorthand, spoken.verb != "open" else { return nil }
         partialCommandFired = true
         let command = Self.command(for: spoken)
         vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\" in a partial — executing now")
@@ -388,7 +396,12 @@ final class WakeGate: ObservableObject {
             setOpen(true)
             onMain { self.writing = true }
             scheduleClose()
-        case .send, .key, .open, .media: break
+        // A remote command is a complete thought: after "next song" the window
+        // stayed green and took the room's talk ("the listener keeps listening",
+        // Fabian 2026-10-22). Keys (copy, paste, new line) are editing and stay open.
+        case .open: close(reason: "open")
+        case .media: close(reason: "music")
+        case .send, .key: break
         }
     }
 
