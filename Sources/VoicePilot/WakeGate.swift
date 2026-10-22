@@ -18,7 +18,14 @@ final class WakeGate: ObservableObject {
     static let word = "pilot"
     static let actionWord = "action"
     /// Longest silence that keeps the gate open, measured from the last thing heard.
-    static let idleWindow: TimeInterval = 20
+    /// Was 20 s; Fabian cut it to 10 on 2026-10-22 and made the timeout a cancel:
+    /// a window that ends in silence rather than "action send" leaves nothing behind.
+    static let idleWindow: TimeInterval = 10
+
+    /// Fires when the gate shuts on silence, after `open` has gone false. AppDelegate
+    /// uses it to wipe what the window typed, so a window has two endings — sent, or
+    /// gone — and anything that leaked in from the room never lingers in the prompt.
+    var onTimedOut: (() -> Void)?
 
     /// What to do with a final.
     enum Verdict {
@@ -233,6 +240,7 @@ final class WakeGate: ObservableObject {
         let idle = Date().timeIntervalSince(lastActivity)
         if idle >= Self.idleWindow {
             close(reason: "\(Int(idle)) s silence")
+            onTimedOut?()
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + (Self.idleWindow - idle)) { [weak self] in
                 self?.checkIdle(generation: generation)

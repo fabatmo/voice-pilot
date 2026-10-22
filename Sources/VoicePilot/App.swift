@@ -43,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         wakeGate = WakeGate()
         wakeGate?.onOpened = { [weak self] in self?.flushParkBuffer() }
+        wakeGate?.onTimedOut = { [weak self] in self?.discardAfterSilence() }
         // Partials open the gate the moment one begins with "pilot", and keep an open
         // gate open: the 20 s window runs from the last thing heard, not the last
         // final delivered.
@@ -185,6 +186,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.submitDictation()
             }
         }
+    }
+
+    /// The listening window ended in silence, not "action send": wipe what it typed.
+    /// Only when this app typed something since the last send or clear — otherwise
+    /// the triple-click-and-Delete would take text Fabian typed by hand.
+    private func discardAfterSilence() {
+        guard !dictationCurrentText.isEmpty else {
+            vpLog("[App] window timed out with nothing typed — nothing to discard")
+            return
+        }
+        vpLog("[App] window timed out — discarding \(dictationCurrentText.count) typed chars")
+        clearDictation()
     }
 
     /// "pilot" types out what was dictated while parked, once, ahead of the words that
