@@ -74,6 +74,8 @@ final class WakeGate: ObservableObject {
         case key(code: Int, modifiers: [String], label: String)
         /// Launch an app, folder or file by spoken name — "action open Illustrator".
         case open(String)
+        /// "action go to <name>": Orca's worktree palette with a partial name.
+        case goTo(String)
         /// Music transport — "action play music", "action next song".
         case media(String)
     }
@@ -149,7 +151,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song|unlike|like"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song|unlike|like|go to|switch to"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -202,7 +204,7 @@ final class WakeGate: ObservableObject {
         // verb followed by more words is a sentence, not a command — "action copy the
         // file" is dictation.
         switch spoken.verb {
-        case "open": return spoken.argument.isEmpty ? nil : spoken
+        case "open", "go to", "switch to": return spoken.argument.isEmpty ? nil : spoken
         case "delete all", "clear", "clear all": return spoken
         default: return spoken.argument.isEmpty ? spoken : nil
         }
@@ -228,6 +230,7 @@ final class WakeGate: ObservableObject {
         case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
         case "play music", "pause music", "stop music", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
+        case "go to", "switch to": return .goTo(spoken.argument)
         default: return .open(spoken.argument)
         }
     }
@@ -275,7 +278,7 @@ final class WakeGate: ObservableObject {
     /// form — words in front of it are not final yet and have to be typed first — and
     /// never "open", whose target is still being spoken.
     func immediateCommand(in partial: String) -> Command? {
-        guard !sleeping, !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, !spoken.shorthand, spoken.verb != "open" else { return nil }
+        guard !sleeping, !partialCommandFired, let spoken = Self.parse(partial), spoken.bare, !spoken.shorthand, !["open", "go to", "switch to"].contains(spoken.verb) else { return nil }
         partialCommandFired = true
         let command = Self.command(for: spoken)
         vpLog("[Gate] \"\(Self.actionWord) \(spoken.verb)\" in a partial — executing now")
@@ -401,6 +404,7 @@ final class WakeGate: ObservableObject {
         // window had stayed green after "next song" and taken the room's talk.
         // "write" is the one exception: it is the command that opens a window.
         case .open: close(reason: "open")
+        case .goTo: close(reason: "go to")
         case .media: close(reason: "music")
         case .key(_, _, let label): close(reason: label)
         case .send: close(reason: "send")

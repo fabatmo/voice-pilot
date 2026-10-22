@@ -222,6 +222,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             terminalController?.pressKey(code, modifiers: modifiers, label: label)
         case .open(let target):
             Launcher.open(target)
+        case .goTo(let name):
+            Orca.goTo(name)
         case .media(let verb):
             Media.perform(verb)
         }
