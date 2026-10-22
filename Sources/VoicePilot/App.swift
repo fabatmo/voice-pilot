@@ -173,6 +173,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             clearDictation()
         case .escape:
             terminalController?.pressEscape()
+        case .mute:
+            speechEngine?.stopListening()
         case .type(let clean):
             typeUtterance(clean)
         case .typeThenSend(let clean):

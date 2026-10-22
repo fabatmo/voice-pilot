@@ -32,6 +32,9 @@ final class WakeGate: ObservableObject {
         case clear
         /// Press Escape — "action stop".
         case escape
+        /// Mute the mic — "action mute". There is no spoken unmute: a muted app
+        /// cannot hear one. The button does that.
+        case mute
         /// The gate swallowed it.
         case drop
     }
@@ -112,7 +115,7 @@ final class WakeGate: ObservableObject {
     /// with whatever punctuation the recogniser wrapped it in: "Action send.",
     /// ", action, delete!".
     private static let command = try! NSRegularExpression(
-        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete|stop)\\b[\\s.!?]*$",
+        pattern: "[\\s,.;:]*\\baction\\b[\\s,]+(send|delete|stop|mute)\\b[\\s.!?]*$",
         options: .caseInsensitive
     )
 
@@ -133,15 +136,27 @@ final class WakeGate: ObservableObject {
 
         // "action delete" wipes the line; words spoken before it in the same breath
         // would be typed and wiped again, so they are dropped instead.
+        // delete, stop and mute all mean "done with this": they shut the gate as well,
+        // so the next sentence needs its own "pilot". On 2026-10-22 two "action
+        // delete"s left the gate open and the room's next six sentences went into the
+        // prompt — and one into Photoshop. Words before the command are dropped: they
+        // were part of what is being cancelled.
+        let dropped = body.trimmingCharacters(in: .whitespaces)
+        let droppedNote = dropped.isEmpty ? "" : " — dropping the words before it: '\(dropped.prefix(60))'"
         if command == "delete" {
-            vpLog("[Gate] \"\(Self.actionWord) delete\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
+            vpLog("[Gate] \"\(Self.actionWord) delete\"\(droppedNote)")
+            close(reason: "delete")
             return .clear
         }
-        // "action stop" is Escape: cancel whatever the app is doing. Words before it
-        // are dropped for the same reason — they were part of what is being stopped.
         if command == "stop" {
-            vpLog("[Gate] \"\(Self.actionWord) stop\"\(body.isEmpty ? "" : " — dropping the words before it: '\(body.prefix(60))'")")
+            vpLog("[Gate] \"\(Self.actionWord) stop\"\(droppedNote)")
+            close(reason: "stop")
             return .escape
+        }
+        if command == "mute" {
+            vpLog("[Gate] \"\(Self.actionWord) mute\"\(droppedNote)")
+            close(reason: "mute")
+            return .mute
         }
         let sends = command == "send"
 
