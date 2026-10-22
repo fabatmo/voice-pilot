@@ -57,12 +57,28 @@ final class WakeGate: ObservableObject {
     /// word: it either confirms the opening or shuts the gate and is dropped.
     private var provisional = false
 
-    /// "Pilot", "pilot,", "Pilot." … at the very start, swallowing the punctuation and
+    /// The wake word where it starts a sentence, swallowing the punctuation and
     /// whitespace the recogniser puts after it so the remainder is ready to type.
+    ///
+    /// Two shapes, because the segmenter merges whatever was said just before with
+    /// the wake word when there is no pause between them — 2026-10-22 17:14 the final
+    /// was 'Uh-huh. Pilot, okay. …' and 17:15 'Action that has that. Pilot, let's add
+    /// …', both missed by a start-anchored match:
+    ///   • at the very start, any case, with fillers allowed before it ("Uh, pilot");
+    ///   • after sentence punctuation with a capital P, which is how the recogniser
+    ///     marks a new sentence — "the pilot said" never gets one, so it stays a word.
+    /// The last such match wins; what precedes it was not addressed to the app.
     private static let opener = try! NSRegularExpression(
-        pattern: "^\\W*pilot\\b[\\s,.!?:;]*",
-        options: .caseInsensitive
+        pattern: "(?:(?i:^\\W*(?:(?:uh|um|uh-huh|hmm|hm|okay|ok|yeah|so|and|hey|voice)[\\s,.!?-]+)*pilot)|[.!?]\\s+Pilot)\\b[\\s,.!?:;]*",
+        options: []
     )
+
+    /// Range of the wake word that opens this text, or nil.
+    private static func openerRange(in text: String) -> Range<String.Index>? {
+        let whole = NSRange(text.startIndex..., in: text)
+        guard let last = opener.matches(in: text, range: whole).last else { return nil }
+        return Range(last.range, in: text)
+    }
 
     init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
@@ -125,10 +141,12 @@ final class WakeGate: ObservableObject {
         }
         let sends = command == "send"
 
-        let bodyRange = NSRange(body.startIndex..., in: body)
-        if let match = Self.opener.firstMatch(in: body, range: bodyRange),
-           let range = Range(match.range, in: body) {
+        if let range = Self.openerRange(in: body) {
             let rest = String(body[range.upperBound...])
+            let before = body[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+            if !before.isEmpty {
+                vpLog("[Gate] dropping what the segmenter merged in before \"\(Self.word)\": '\(before.prefix(60))'")
+            }
             vpLog("[Gate] opened by \"\(Self.word)\"\(provisional ? " (confirmed)" : "") — delivering '\(rest.prefix(60))'\(sends ? " then send" : "")")
             provisional = false
             setOpen(true)
@@ -165,8 +183,7 @@ final class WakeGate: ObservableObject {
     }
 
     private static func opens(_ text: String) -> Bool {
-        let whole = NSRange(text.startIndex..., in: text)
-        return opener.firstMatch(in: text, range: whole) != nil
+        openerRange(in: text) != nil
     }
 
     private func scheduleClose() {
