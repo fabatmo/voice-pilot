@@ -58,7 +58,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         parkZone = ParkZoneController(
             terminalController: terminalController!,
-            speechEngine: speechEngine!
+            speechEngine: speechEngine!,
+            wakeGate: wakeGate!
         )
         parkZone?.onSend = { [weak self] in
             self?.submitDictation()

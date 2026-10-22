@@ -233,13 +233,6 @@ struct MiniContent: View {
 
                 Spacer()
 
-                // The mode switch lives here because it is flipped at the moment someone
-                // walks in, not from a menu.
-                NativeButton(title: wakeGate.enabled ? "Pilot: On" : "Pilot: Off") {
-                    wakeGate.enabled.toggle()
-                }
-                .frame(width: 72, height: 18)
-
                 NativeButton(title: speechEngine.isListening ? "Mute" : "Unmute") {
                     speechEngine.toggleListening()
                 }

@@ -24,6 +24,7 @@ final class ParkZoneController: NSObject, WindowRevealing {
     private var panel: NSPanel?
     private let terminalController: TerminalController
     private let speechEngine: SpeechEngine
+    private let wakeGate: WakeGate
     private var debouncer: HoverParkDebouncer?
 
     // Action buttons are companion windows rather than controls inside the zone:
@@ -32,6 +33,7 @@ final class ParkZoneController: NSObject, WindowRevealing {
     // the buttons dead exactly when aimed at.
     private var buttons: [ZoneButtonWindow] = []
     private var listeningObserver: AnyCancellable?
+    private var wakeObserver: AnyCancellable?
     private static let buttonGap: CGFloat = 10      // zone to column
     private static let buttonSpacing: CGFloat = 5   // button to button
     private static let buttonSize = NSSize(width: 52, height: 34)
@@ -39,7 +41,8 @@ final class ParkZoneController: NSObject, WindowRevealing {
     // Sized so three buttons fit the card at the height two did (120 pt): 3 × 34 + 2 × 5
     // + 2 × 4. The first cut used 38 pt buttons and 10 pt margins, which forced the
     // zone 26 pt taller — reported 2026-10-08 as the zone suddenly being bigger.
-    private static let buttonCount = 3              // Send, Clear, Mute
+    // The fourth button (wake word mode, 2026-10-22) adds 39 pt: the card is 159 pt.
+    private static let buttonCount = 4              // Send, Clear, Mute, Pilot
 
     private static func columnHeight(count: Int) -> CGFloat {
         let n = CGFloat(count)
@@ -53,9 +56,10 @@ final class ParkZoneController: NSObject, WindowRevealing {
 
     var isVisible: Bool { panel != nil }
 
-    init(terminalController: TerminalController, speechEngine: SpeechEngine) {
+    init(terminalController: TerminalController, speechEngine: SpeechEngine, wakeGate: WakeGate) {
         self.terminalController = terminalController
         self.speechEngine = speechEngine
+        self.wakeGate = wakeGate
         super.init()
         // Absent key means first run since the feature landed: show it, so the zone is
         // discoverable without hunting through the menu. After that, honour the choice.
@@ -223,14 +227,21 @@ final class ParkZoneController: NSObject, WindowRevealing {
                 vpLog("[Park] mute button pressed")
                 self?.speechEngine.toggleListening()
             },
+            makeButton(id: "pilot", symbol: "person.2", title: "Pilot", accent: .blue) { [weak self] in
+                vpLog("[Park] pilot button pressed")
+                self?.wakeGate.enabled.toggle()
+            },
         ]
 
-        // Mute is the only button with state. It follows the engine rather than its own
-        // clicks, so muting from the panel or the menu bar shows here too — and it stays
-        // lit while muted, because a silent app with nothing on screen saying why reads
-        // as a broken one.
+        // Mute and Pilot carry state. They follow the model rather than their own
+        // clicks, so a change from the menu bar shows here too — and they stay lit
+        // while on, because a silent app with nothing on screen saying why reads as a
+        // broken one.
         listeningObserver = speechEngine.$isListening.sink { [weak self] listening in
             self?.showMuteState(muted: !listening)
+        }
+        wakeObserver = wakeGate.$enabled.sink { [weak self] enabled in
+            self?.showWakeState(enabled: enabled)
         }
 
         // Position before ordering front, so no button is ever seen at its default
@@ -294,8 +305,17 @@ final class ParkZoneController: NSObject, WindowRevealing {
         model.latched = muted
     }
 
+    /// Lit while the wake word mode is on: the room-wide "I am not being typed" cue.
+    private func showWakeState(enabled: Bool) {
+        guard let model = buttons.first(where: { $0.id == "pilot" })?.model else { return }
+        model.symbol = enabled ? "person.2.fill" : "person.2"
+        model.title = enabled ? "Pilot on" : "Pilot"
+        model.latched = enabled
+    }
+
     private func hideButtons() {
         listeningObserver = nil
+        wakeObserver = nil
         for b in buttons { b.panel.orderOut(nil) }
         buttons.removeAll()
     }

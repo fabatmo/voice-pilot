@@ -169,7 +169,7 @@ class StatusBarController {
         vpLog("[StatusBar] park on panel hover = \(next)")
     }
 
-    /// Same switch as the "Pilot: On/Off" button on the floater.
+    /// Same switch as the Pilot button on the park zone card.
     @objc private func toggleWakeWord() {
         wakeGate.enabled.toggle()
     }
