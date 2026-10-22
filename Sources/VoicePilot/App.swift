@@ -49,7 +49,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // final delivered.
         speechEngine?.$currentTranscript
             .filter { !$0.isEmpty }
-            .sink { [weak self] text in self?.wakeGate?.notePartial(text) }
+            .sink { [weak self] text in
+                guard let self, let gate = self.wakeGate else { return }
+                gate.notePartial(text)
+                // A bare command runs from the partial, 1–2 s before its final.
+                if let verdict = gate.immediateCommand(in: text) {
+                    self.perform(verdict)
+                }
+            }
             .store(in: &cancellables)
 
         floatingPanel = FloatingPanelController(
@@ -154,18 +161,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vpLog("[App] handleUtterance: '\(text.prefix(80))'")
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard Date() > dictationSuppressUntil else { return }
 
         let heard = trimmed.replacingOccurrences(of: "\n", with: " ")
         guard !heard.isEmpty else { return }
 
         // Wake word mode: drops speech outright while the gate is shut, strips the
         // "pilot" that opened it, and turns "action send" / "action delete" /
-        // "action stop" into Send, Clear and Escape. Sits before parking so a shut
-        // gate never fills the park buffer either — nothing said across the desk is
-        // kept anywhere.
+        // "action stop" / "action mute" into Send, Clear, Escape and Mute. Sits
+        // before parking so a shut gate never fills the park buffer either — nothing
+        // said across the desk is kept anywhere. The gate sees every final, even
+        // during the post-send suppression, so a command fired from a partial is
+        // always reconciled with its final.
         guard let gate = wakeGate else { return }
-        switch gate.admit(heard) {
+        perform(gate.admit(heard))
+    }
+
+    /// One place for what a verdict does, whether it came from a final or a partial.
+    private func perform(_ verdict: WakeGate.Verdict) {
+        switch verdict {
         case .drop:
             return
         case .send:
@@ -177,8 +190,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .mute:
             speechEngine?.stopListening()
         case .type(let clean):
+            // The window after a send swallows the utterance that was still in
+            // flight; commands above are not subject to it.
+            guard Date() > dictationSuppressUntil else { return }
             typeUtterance(clean)
         case .typeThenSend(let clean):
+            guard Date() > dictationSuppressUntil else { return }
             typeUtterance(clean)
             // The paste has to land before Enter. Orca takes the clipboard a beat
             // after the keystroke; Enter on its heels would submit the previous text.

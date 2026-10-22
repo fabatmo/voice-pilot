@@ -134,8 +134,58 @@ final class WakeGate: ObservableObject {
         options: .caseInsensitive
     )
 
+    /// Set when a command ran from a partial; the segment's final must not run it
+    /// again. Reset by every final.
+    private var partialCommandFired = false
+
+    /// The verb of a command that is the whole of `text` — "Action send.", "Pilot,
+    /// delete" — or nil when there are words in front of it or no command at all.
+    private static func bareVerb(in text: String) -> String? {
+        let whole = NSRange(text.startIndex..., in: text)
+        if let match = bareCommand.firstMatch(in: text, range: whole),
+           let verb = Range(match.range(at: 1), in: text) {
+            return text[verb].lowercased()
+        }
+        if let match = command.firstMatch(in: text, range: whole),
+           let range = Range(match.range, in: text),
+           let verb = Range(match.range(at: 1), in: text),
+           text[..<range.lowerBound].trimmingCharacters(in: .whitespaces).isEmpty {
+            return text[verb].lowercased()
+        }
+        return nil
+    }
+
+    /// A command on its own in a partial: run it now, not 1–2 s later when the final
+    /// lands (Fabian, 2026-10-22: "for any action command, don't wait"). Only the bare
+    /// form — words in front of it are not final yet and have to be typed first, so
+    /// that shape waits for the final.
+    func immediateCommand(in partial: String) -> Verdict? {
+        guard enabled, !partialCommandFired, let verb = Self.bareVerb(in: partial) else { return nil }
+        partialCommandFired = true
+        vpLog("[Gate] \"\(Self.actionWord) \(verb)\" in a partial — executing now")
+        return verdict(for: verb)
+    }
+
+    private func verdict(for verb: String) -> Verdict {
+        switch verb {
+        case "delete":
+            close(reason: "delete")
+            return .clear
+        case "stop":
+            close(reason: "stop")
+            return .escape
+        case "mute":
+            close(reason: "mute")
+            return .mute
+        default:
+            return .send   // submitDictation shuts the gate through closeForSend
+        }
+    }
+
     /// What to do with a final.
     func admit(_ text: String) -> Verdict {
+        let firedEarly = partialCommandFired
+        partialCommandFired = false
         guard enabled else { return .type(text) }
         noteActivity()
 
@@ -151,6 +201,11 @@ final class WakeGate: ObservableObject {
                   let verb = Range(match.range(at: 1), in: body) {
             command = body[verb].lowercased()
             body = String(body[..<range.lowerBound])
+        }
+
+        if let verb = command, firedEarly, body.trimmingCharacters(in: .whitespaces).isEmpty {
+            vpLog("[Gate] \"\(Self.actionWord) \(verb)\" already executed from the partial")
+            return .drop
         }
 
         // "action delete" wipes the line; words spoken before it in the same breath
