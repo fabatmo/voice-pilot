@@ -67,12 +67,25 @@ enum Launcher {
             let name = url.deletingPathExtension().lastPathComponent.lowercased()
             return words.allSatisfy { name.contains($0) }
         }
+        // Already running wins outright — "open WhatsApp" must bring forward the copy
+        // that is open, not launch a second one. 2026-10-22: /Applications held both
+        // WhatsApp.app (2024, Electron) and WhatsApp.localized/WhatsApp.app (current,
+        // the one in the Dock, running); same name, so the stale one got launched.
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardizedFileURL })
+        if let live = matches.first(where: { running.contains($0.standardizedFileURL) }) {
+            return live
+        }
         func year(_ url: URL) -> Int {
             let name = url.deletingPathExtension().lastPathComponent
             return Int(name.split(separator: " ").last ?? "") ?? 0
         }
+        func modified(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+        }
         return matches.min {
-            year($0) != year($1) ? year($0) > year($1) : $0.lastPathComponent.count < $1.lastPathComponent.count
+            if year($0) != year($1) { return year($0) > year($1) }
+            if $0.lastPathComponent.count != $1.lastPathComponent.count { return $0.lastPathComponent.count < $1.lastPathComponent.count }
+            return modified($0) > modified($1)   // same name twice: the newer install
         }
     }
 
