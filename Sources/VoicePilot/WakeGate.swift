@@ -151,7 +151,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play music|pause music|next song|previous song|unlike|like|go to|switch to"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|pause (?:the )?music|pause|resume|next song|previous song|unlike|like|go to|switch to"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -184,17 +184,22 @@ final class WakeGate: ObservableObject {
         var bare: Bool { body.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
+    /// "Stop the music" and "stop music" are the same verb.
+    private static func normalise(_ verb: Substring) -> String {
+        verb.lowercased().replacingOccurrences(of: " the ", with: " ")
+    }
+
     private static func parse(_ text: String) -> Spoken? {
         let whole = NSRange(text.startIndex..., in: text)
         let spoken: Spoken
         if let match = bareCommand.firstMatch(in: text, range: whole),
            let verb = Range(match.range(at: 1), in: text) {
             let argument = Range(match.range(at: 2), in: text).map { String(text[$0]) } ?? ""
-            spoken = Spoken(verb: text[verb].lowercased(), argument: argument, body: "")
+            spoken = Spoken(verb: normalise(text[verb]), argument: argument, body: "")
         } else if let match = command.firstMatch(in: text, range: whole),
                   let range = Range(match.range, in: text) {
             let shorthand = match.range(at: 1).location == NSNotFound
-            let verb = Range(match.range(at: shorthand ? 2 : 1), in: text).map { text[$0].lowercased() } ?? "pass"
+            let verb = Range(match.range(at: shorthand ? 2 : 1), in: text).map { normalise(text[$0]) } ?? "pass"
             let argument = Range(match.range(at: 3), in: text).map { String(text[$0]) } ?? ""
             spoken = Spoken(verb: verb, argument: argument, body: String(text[..<range.lowerBound]), shorthand: shorthand)
         } else {
@@ -229,7 +234,7 @@ final class WakeGate: ObservableObject {
         case "save": return .key(code: 1, modifiers: ["command"], label: "⌘S")
         case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
-        case "play music", "pause music", "stop music", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
+        case "play music", "pause music", "stop music", "pause", "resume", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
         case "go to", "switch to": return .goTo(spoken.argument)
         default: return .open(spoken.argument)
         }
