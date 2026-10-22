@@ -49,6 +49,10 @@ final class WakeGate: ObservableObject {
     /// True while speech is being let through. Meaningless when the mode is off.
     @Published private(set) var open = false
 
+    /// Fires when a final opens the gate, before its words are typed. AppDelegate uses
+    /// it to flush what was buffered while parked into the prompt first.
+    var onOpened: (() -> Void)?
+
     private var lastActivity = Date.distantPast
     private var closeGeneration = 0
 
@@ -151,6 +155,7 @@ final class WakeGate: ObservableObject {
             provisional = false
             setOpen(true)
             scheduleClose()
+            onOpened?()
             return sends ? .typeThenSend(rest) : .type(rest)
         }
 

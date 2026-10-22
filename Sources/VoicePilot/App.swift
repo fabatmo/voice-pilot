@@ -42,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         wakeGate = WakeGate()
+        wakeGate?.onOpened = { [weak self] in self?.flushParkBuffer() }
         // Partials open the gate the moment one begins with "pilot", and keep an open
         // gate open: the 20 s window runs from the last thing heard, not the last
         // final delivered.
@@ -182,6 +183,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.submitDictation()
             }
         }
+    }
+
+    /// "pilot" types out what was dictated while parked, once, ahead of the words that
+    /// followed it. Only when delivery is actually possible: parked, the flush would
+    /// bounce straight back into the buffer; in a non-target app it has nowhere to go
+    /// and would be lost. Both cases leave the buffer alone for the next "pilot".
+    private func flushParkBuffer() {
+        guard let buffered = dictationManager?.accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines),
+              !buffered.isEmpty else { return }
+        if terminalController?.parked == true {
+            vpLog("[App] pilot: \(buffered.count) buffered chars kept — still parked")
+            return
+        }
+        guard terminalController?.isSubmitTarget == true else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+            vpLog("[App] pilot: \(buffered.count) buffered chars kept — frontmost is \(front), not a submit target")
+            return
+        }
+        vpLog("[App] pilot: flushing \(buffered.count) buffered chars from the park zone")
+        typeUtterance(buffered.replacingOccurrences(of: "\n", with: " "))
+        dictationManager?.clear()
     }
 
     private func typeUtterance(_ clean: String) {
