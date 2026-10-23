@@ -76,6 +76,8 @@ final class WakeGate: ObservableObject {
         case open(String)
         /// "action go to <name>": Orca's worktree palette with a partial name.
         case goTo(String)
+        /// "action screen off" / "sleep": the display goes to sleep.
+        case screenSleep
         /// Music transport — "action play music", "action next song".
         case media(String)
     }
@@ -150,7 +152,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|pause (?:the )?music|pause|resume|next song|previous song|unlike|like|go to|switch to"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|pause (?:the )?music|pause|resume|next song|previous song|unlike|like|go to|switch to|screen off|screen sleep|sleep"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -235,6 +237,7 @@ final class WakeGate: ObservableObject {
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
         case "play music", "pause music", "stop music", "pause", "resume", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
         case "go to", "switch to": return .goTo(spoken.argument)
+        case "screen off", "screen sleep", "sleep": return .screenSleep
         default: return .open(spoken.argument)
         }
     }
@@ -420,6 +423,7 @@ final class WakeGate: ObservableObject {
         // "write" is the one exception: it is the command that opens a window.
         case .open: close(reason: "open")
         case .goTo: close(reason: "go to")
+        case .screenSleep: close(reason: "screen sleep")
         case .media: close(reason: "music")
         case .key(_, _, let label): close(reason: label)
         case .send: close(reason: "send")
