@@ -12,7 +12,7 @@ import AppKit
 enum Media {
     static func perform(_ verb: String) {
         switch verb {
-        case "play music", "resume":
+        case "play music", "play", "resume":
             mediaKey(.play, label: "play/pause")
         case "pause music", "stop music", "pause":
             if let player = playingScriptablePlayer() {
@@ -20,9 +20,9 @@ enum Media {
             } else {
                 mediaKey(.play, label: "play/pause")
             }
-        case "next song":
+        case "next song", "next":
             mediaKey(.next, label: "next")
-        case "previous song":
+        case "previous song", "previous":
             mediaKey(.previous, label: "previous")
         case "like":
             SoundCloud.setPlayingTrackLiked(true)

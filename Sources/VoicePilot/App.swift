@@ -229,6 +229,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Launcher.open(target)
         case .goTo(let name):
             Orca.goTo(name)
+        case .screenSleep:
+            // pmset displaysleepnow needs no privileges; the mic keeps listening, so
+            // "pilot, action play music" still works with the screen dark.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            p.arguments = ["displaysleepnow"]
+            do { try p.run(); vpLog("[Screen] display sleep") } catch { vpLog("[Screen] pmset FAILED: \(error.localizedDescription)") }
         case .media(let verb):
             Media.perform(verb)
         }

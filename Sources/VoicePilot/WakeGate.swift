@@ -76,6 +76,8 @@ final class WakeGate: ObservableObject {
         case open(String)
         /// "action go to <name>": Orca's worktree palette with a partial name.
         case goTo(String)
+        /// "action screen off" / "sleep": the display goes to sleep.
+        case screenSleep
         /// Music transport — "action play music", "action next song".
         case media(String)
     }
@@ -150,7 +152,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|pause (?:the )?music|pause|resume|next song|previous song|unlike|like|go to|switch to"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|play|pause (?:the )?music|pause|resume|next song|next|previous song|previous|unlike|like|go to|switch to|screen off|screen sleep|sleep"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -233,16 +235,28 @@ final class WakeGate: ObservableObject {
         case "save": return .key(code: 1, modifiers: ["command"], label: "⌘S")
         case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
-        case "play music", "pause music", "stop music", "pause", "resume", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
+        case "play music", "play", "pause music", "stop music", "pause", "resume", "next song", "next", "previous song", "previous", "like", "unlike": return .media(spoken.verb)
         case "go to", "switch to": return .goTo(spoken.argument)
+        case "screen off", "screen sleep", "sleep": return .screenSleep
         default: return .open(spoken.argument)
         }
     }
 
     /// Range of the wake word that opens this text, or nil.
-    private static func openerRange(in text: String) -> Range<String.Index>? {
+    /// With the gate shut, "pilot" also counts after a comma or as the last word: the
+    /// recogniser glues a "pilot" said after a pause onto the previous sentence —
+    /// "The shell I'm pilot.", "…and next to it, pilot." — 14 such misses in the
+    /// 2026-10-22 log (gate-audit.sh). Never while open: a sentence *about* the pilot
+    /// mid-dictation must not be cut at that word.
+    private static let lenientOpener = try! NSRegularExpression(
+        pattern: "(?:[,;:—-]\\s*pilot\\b[\\s,.!?:;]*|\\bpilot[\\s.!?]*$)",
+        options: .caseInsensitive
+    )
+
+    private static func openerRange(in text: String, lenient: Bool = false) -> Range<String.Index>? {
         let whole = NSRange(text.startIndex..., in: text)
-        guard let last = opener.matches(in: text, range: whole).last else { return nil }
+        if let last = opener.matches(in: text, range: whole).last { return Range(last.range, in: text) }
+        guard lenient, let last = lenientOpener.matches(in: text, range: whole).last else { return nil }
         return Range(last.range, in: text)
     }
 
@@ -270,7 +284,7 @@ final class WakeGate: ObservableObject {
             vpLog("[Gate] \"hey \(Self.word)\" in a partial — awake")
             onMain { self.sleeping = false }
         }
-        guard enabled, !open, Self.openerRange(in: text) != nil else { return }
+        guard enabled, !open, Self.openerRange(in: text, lenient: true) != nil else { return }
         provisional = true
         vpLog("[Gate] opened by \"\(Self.word)\" in a partial — awaiting the final")
         setOpen(true)
@@ -336,7 +350,7 @@ final class WakeGate: ObservableObject {
             vpLog("[Gate] \"\(Self.actionWord) send\"")
             return .command(.send)
         }
-        if Self.openerRange(in: body) != nil {
+        if Self.openerRange(in: body, lenient: !open || provisional) != nil {
             return admitWords(body, sends: true)
         }
         if !enabled || (open && !provisional) {
@@ -352,7 +366,7 @@ final class WakeGate: ObservableObject {
     private func admitWords(_ text: String, sends: Bool) -> Verdict {
         guard enabled else { return sends ? .typeThenSend(text) : .type(text) }
 
-        if let range = Self.openerRange(in: text) {
+        if let range = Self.openerRange(in: text, lenient: !open || provisional) {
             let rest = String(text[range.upperBound...])
             let before = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
             if !before.isEmpty {
@@ -409,6 +423,7 @@ final class WakeGate: ObservableObject {
         // "write" is the one exception: it is the command that opens a window.
         case .open: close(reason: "open")
         case .goTo: close(reason: "go to")
+        case .screenSleep: close(reason: "screen sleep")
         case .media: close(reason: "music")
         case .key(_, _, let label): close(reason: label)
         case .send: close(reason: "send")

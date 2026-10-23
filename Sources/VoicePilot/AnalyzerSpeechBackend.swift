@@ -38,6 +38,49 @@ final class AnalyzerSpeechBackend: SpeechBackend {
     private var resultsTask: Task<Void, Never>?
     private var tapInstalled = false
 
+    // MARK: - Burst tracking
+    //
+    // 2026-10-23: Fabian said "pilot" three times and the log holds nothing at all
+    // for those 50 s — no partial, no final. Whether the microphone heard him or the
+    // recogniser swallowed it was unknowable, so every speech-like burst is now
+    // measured at the tap and compared with what the recogniser delivered. A burst
+    // that produced no result within 2.5 s of ending is logged as such.
+    private let burstQueue = DispatchQueue(label: "voicepilot.burst")
+    private var burstStart: Date?
+    private var burstLastLoud: Date?
+    private var burstPeak: Float = 0
+    private var lastResultAt = Date.distantPast
+    private static let burstThresholdDB: Float = -42   // room noise sits well below; speech well above
+    private static let burstMinSeconds = 0.25
+    private static let burstGapSeconds = 0.6
+
+    private func trackLevel(of buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+        var peak: Float = 0
+        for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(data[i])) }
+        let db = 20 * log10(max(peak, 1e-7))
+        let now = Date()
+        burstQueue.async { [self] in
+            if db >= Self.burstThresholdDB {
+                if burstStart == nil { burstStart = now; burstPeak = db }
+                burstPeak = max(burstPeak, db)
+                burstLastLoud = now
+            } else if let start = burstStart, let lastLoud = burstLastLoud,
+                      now.timeIntervalSince(lastLoud) >= Self.burstGapSeconds {
+                let length = lastLoud.timeIntervalSince(start)
+                let peakDB = burstPeak
+                burstStart = nil; burstLastLoud = nil; burstPeak = 0
+                guard length >= Self.burstMinSeconds else { return }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    guard let self else { return }
+                    let heard = self.lastResultAt >= start
+                    let delay = heard ? String(format: "result %.1f s after it began", self.lastResultAt.timeIntervalSince(start)) : "NO recogniser output within 2.5 s"
+                    vpLog(String(format: "[Audio] burst %.1f s, peak %.0f dB — %@", length, peakDB, delay))
+                }
+            }
+        }
+    }
+
     /// Last finalized segment, to guard against an identical repeat delivery.
     /// Finalized results arrive as distinct contiguous segments, not cumulatively.
     /// Audio position of the last delivered final. A re-emitted segment starts at the
@@ -159,9 +202,11 @@ final class AnalyzerSpeechBackend: SpeechBackend {
         }
 
         input.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { [weak self] buffer, _ in
+            self?.trackLevel(of: buffer)
             self?.feed(buffer)
         }
         tapInstalled = true
+        vpLog("[Analyzer] input device: \(AVCaptureDevice.default(for: .audio)?.localizedName ?? "?"), tap \(tapFormat.sampleRate) Hz \(tapFormat.channelCount) ch")
 
         audioEngine.prepare()
         do {
@@ -218,6 +263,8 @@ final class AnalyzerSpeechBackend: SpeechBackend {
                     guard let self else { return }
                     let text = String(result.text.characters)
                     let isFinal = CMTimeCompare(result.resultsFinalizationTime, result.range.end) >= 0
+                    let now = Date()
+                    self.burstQueue.async { self.lastResultAt = now }
 
                     vpLog(String(
                         format: "[Analyzer] result final=%@ range=[%.2f,%.2f] finalizedThrough=%.2f text='%@'",
