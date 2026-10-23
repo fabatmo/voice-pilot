@@ -20,9 +20,9 @@ enum Media {
             } else {
                 mediaKey(.play, label: "play/pause")
             }
-        case "next song":
+        case "next song", "next":
             mediaKey(.next, label: "next")
-        case "previous song":
+        case "previous song", "previous":
             mediaKey(.previous, label: "previous")
         case "like":
             SoundCloud.setPlayingTrackLiked(true)

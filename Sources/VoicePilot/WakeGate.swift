@@ -152,7 +152,7 @@ final class WakeGate: ObservableObject {
 
     /// Spoken verbs, longest first so "delete all" wins over "delete". "sent" is
     /// what the recogniser made of "send" at 7:47 PM on 2026-10-22 — typed as text.
-    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|play|pause (?:the )?music|pause|resume|next song|previous song|unlike|like|go to|switch to|screen off|screen sleep|sleep"
+    private static let verbs = "send|sent|pass|delete all|clear all|clear|delete|stop (?:the )?music|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play (?:the )?music|play|pause (?:the )?music|pause|resume|next song|next|previous song|previous|unlike|like|go to|switch to|screen off|screen sleep|sleep"
 
     /// "action <verb> [argument]" at the end of an utterance, with whatever
     /// punctuation the recogniser wrapped it in: "Action send.", ", action, delete!",
@@ -235,7 +235,7 @@ final class WakeGate: ObservableObject {
         case "save": return .key(code: 1, modifiers: ["command"], label: "⌘S")
         case "close": return .key(code: 13, modifiers: ["command"], label: "⌘W")
         case "find": return .key(code: 3, modifiers: ["command"], label: "⌘F")
-        case "play music", "play", "pause music", "stop music", "pause", "resume", "next song", "previous song", "like", "unlike": return .media(spoken.verb)
+        case "play music", "play", "pause music", "stop music", "pause", "resume", "next song", "next", "previous song", "previous", "like", "unlike": return .media(spoken.verb)
         case "go to", "switch to": return .goTo(spoken.argument)
         case "screen off", "screen sleep", "sleep": return .screenSleep
         default: return .open(spoken.argument)

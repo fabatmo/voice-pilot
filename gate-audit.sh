@@ -18,7 +18,7 @@
 
 LOG=/tmp/voicepilot_debug.log
 PILOTISH='[Pp]ilot|[Pp]ilots|[Pp]ile of|[Pp]ilate|[Pp]irate|[Pp]ylot|[Pp]ilut|[Pp]ile up|[Pp]allet|[Pp]ilo '
-VERBS='send|sent|pass|delete|clear|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play|pause|resume|next song|previous song|like|unlike|go to|switch to'
+VERBS='send|sent|pass|delete|clear|stop|mute|write|select all|copy|paste|cut|undo|redo|new line|tab|save|close|find|open|play|pause|resume|next song|next|previous song|previous|like|unlike|go to|switch to'
 
 classify() {
   # Reads log lines on stdin, prints findings. Keeps the last few lines so a typed
