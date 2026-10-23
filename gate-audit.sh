@@ -12,6 +12,8 @@
 #   TYPED COMMAND  an "action <verb>" that went in as text instead of running
 #   FAILED         any command that reported a failure (open, media, SoundCloud, Orca)
 #   REFUSED        delete all refused for want of a focused text field
+#   UNHEARD        the microphone recorded a speech-like burst and the recogniser
+#                  produced nothing for it within 2.5 s
 # Plus the counts that give the denominators: opens, sends, timeouts, drops.
 
 LOG=/tmp/voicepilot_debug.log
@@ -46,6 +48,7 @@ classify() {
       if (pending != "" && NR - pendingN <= 3) { print pendingAt "  TYPED COMMAND  " pending; pending = "" }
       next
     }
+    /\[Audio\] .*NO recogniser output/ { print stamp($0) "  UNHEARD        " substr($0, index($0, "[")); next }
     /FAILED/ { print stamp($0) "  FAILED         " substr($0, index($0, "[")); next }
     /delete all refused/ { print stamp($0) "  REFUSED        " substr($0, index($0, "[")); next }
   '
