@@ -240,9 +240,20 @@ final class WakeGate: ObservableObject {
     }
 
     /// Range of the wake word that opens this text, or nil.
-    private static func openerRange(in text: String) -> Range<String.Index>? {
+    /// With the gate shut, "pilot" also counts after a comma or as the last word: the
+    /// recogniser glues a "pilot" said after a pause onto the previous sentence —
+    /// "The shell I'm pilot.", "…and next to it, pilot." — 14 such misses in the
+    /// 2026-10-22 log (gate-audit.sh). Never while open: a sentence *about* the pilot
+    /// mid-dictation must not be cut at that word.
+    private static let lenientOpener = try! NSRegularExpression(
+        pattern: "(?:[,;:—-]\\s*pilot\\b[\\s,.!?:;]*|\\bpilot[\\s.!?]*$)",
+        options: .caseInsensitive
+    )
+
+    private static func openerRange(in text: String, lenient: Bool = false) -> Range<String.Index>? {
         let whole = NSRange(text.startIndex..., in: text)
-        guard let last = opener.matches(in: text, range: whole).last else { return nil }
+        if let last = opener.matches(in: text, range: whole).last { return Range(last.range, in: text) }
+        guard lenient, let last = lenientOpener.matches(in: text, range: whole).last else { return nil }
         return Range(last.range, in: text)
     }
 
@@ -270,7 +281,7 @@ final class WakeGate: ObservableObject {
             vpLog("[Gate] \"hey \(Self.word)\" in a partial — awake")
             onMain { self.sleeping = false }
         }
-        guard enabled, !open, Self.openerRange(in: text) != nil else { return }
+        guard enabled, !open, Self.openerRange(in: text, lenient: true) != nil else { return }
         provisional = true
         vpLog("[Gate] opened by \"\(Self.word)\" in a partial — awaiting the final")
         setOpen(true)
@@ -336,7 +347,7 @@ final class WakeGate: ObservableObject {
             vpLog("[Gate] \"\(Self.actionWord) send\"")
             return .command(.send)
         }
-        if Self.openerRange(in: body) != nil {
+        if Self.openerRange(in: body, lenient: !open || provisional) != nil {
             return admitWords(body, sends: true)
         }
         if !enabled || (open && !provisional) {
@@ -352,7 +363,7 @@ final class WakeGate: ObservableObject {
     private func admitWords(_ text: String, sends: Bool) -> Verdict {
         guard enabled else { return sends ? .typeThenSend(text) : .type(text) }
 
-        if let range = Self.openerRange(in: text) {
+        if let range = Self.openerRange(in: text, lenient: !open || provisional) {
             let rest = String(text[range.upperBound...])
             let before = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
             if !before.isEmpty {
