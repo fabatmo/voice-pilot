@@ -41,6 +41,20 @@ enum Orca {
             if let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= 0.6 {
                 let r = AXUIElementPerformAction(best.0.element, kAXPressAction as CFString)
                 vpLog("[Orca] go to '\(name)' → \(best.0.kind) \"\(best.0.label)\" (match \(Int(best.1 * 100))%, \(candidates.count) rows) — AXPress \(r == .success ? "ok" : "err \(r.rawValue)")")
+                // AXPress returned ok on 2026-10-23 twice without Orca switching. A
+                // worktree row reports AXSelected, so check, and click the row for real
+                // when the press was not honoured.
+                if best.0.kind == "worktree" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        if isSelected(best.0.element) {
+                            vpLog("[Orca] \"\(best.0.label)\" is selected")
+                        } else {
+                            click(best.0.element, label: best.0.label)
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { click(best.0.element, label: best.0.label) }
+                }
                 return
             }
             let top = scored.sorted { $0.1 > $1.1 }.prefix(3).map { "\"\($0.0.label)\" \(Int($0.1 * 100))%" }
@@ -75,6 +89,37 @@ enum Orca {
         (attr(e, "AXDOMClassList") as? [String]) ?? []
     }
 
+    private static func isSelected(_ e: AXUIElement) -> Bool {
+        (attr(e, kAXSelectedAttribute as String) as? Bool) ?? false
+    }
+
+    /// A real click at the row's centre, the pointer put back afterwards. Mouse
+    /// events through CGEvent do land in Electron (the park zone's triple-click uses
+    /// the same path); it is keystrokes that need System Events.
+    private static func click(_ e: AXUIElement, label: String) {
+        var posValue: AnyObject?, sizeValue: AnyObject?
+        AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &posValue)
+        AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &sizeValue)
+        var pos = CGPoint.zero, size = CGSize.zero
+        guard let p = posValue, let s = sizeValue,
+              AXValueGetValue(p as! AXValue, .cgPoint, &pos), AXValueGetValue(s as! AXValue, .cgSize, &size),
+              size.width > 0 else {
+            vpLog("[Orca] \"\(label)\" — no frame to click")
+            return
+        }
+        let target = CGPoint(x: pos.x + min(size.width / 2, 120), y: pos.y + size.height / 2)
+        let restore = CGEvent(source: nil)?.location ?? target
+        let src = CGEventSource(stateID: .hidSystemState)
+        CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: target, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: target, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(40_000)
+        CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: target, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: restore, mouseButton: .left)?.post(tap: .cghidEventTap)
+        vpLog("[Orca] \"\(label)\" — AXPress not honoured, clicked at (\(Int(target.x)), \(Int(target.y)))")
+    }
+
     private static func sidebarCandidates(pid: pid_t) -> ([Candidate], AXUIElement)? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -98,9 +143,11 @@ enum Orca {
         let role = attr(e, kAXRoleAttribute as String) as? String ?? ""
         if role == "AXMenuItem" {
             let texts = staticTexts(e, depth: 0)
-            // "Active", "primary", "Mark as unread" are status chrome, not names.
-            let named = texts.filter { !["active", "primary", "mark as unread"].contains($0.lowercased()) }
-            let label = named.first ?? texts.first ?? "?"
+            // "Active", "Unread:", "primary", "Mark as unread" are status chrome, not names.
+            let chrome: Set<String> = ["active", "unread:", "unread", "primary", "mark as unread"]
+            let named = texts.filter { !chrome.contains($0.lowercased()) }
+            // The display name sits in its own group (DOM classes "block min-w-0").
+            let label = nameText(in: e, depth: 0) ?? named.first ?? texts.first ?? "?"
             out.append(Candidate(element: e, kind: "worktree", label: label, tokens: tokens(of: named.joined(separator: " "))))
         } else if role == "AXRow", classes(e).contains("compact-agent-row") {
             // The agent row's title is the first static text after the status word.
@@ -109,6 +156,18 @@ enum Orca {
             out.append(Candidate(element: e, kind: "agent", label: label, tokens: tokens(of: label)))
         }
         for k in children(e) { collect(k, into: &out, depth: depth + 1) }
+    }
+
+    private static func nameText(in e: AXUIElement, depth: Int) -> String? {
+        if depth > 8 { return nil }
+        for k in children(e) {
+            let cls = classes(k)
+            if cls.contains("block"), cls.contains("min-w-0") {
+                if let t = staticTexts(k, depth: 0).first { return t }
+            }
+            if let t = nameText(in: k, depth: depth + 1) { return t }
+        }
+        return nil
     }
 
     /// Static texts under an element, in document order, stopping at nested rows so
